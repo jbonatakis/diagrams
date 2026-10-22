@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -15,16 +14,16 @@ import (
 )
 
 func main() {
-	token := os.Getenv("DIAGRAMS_TOKEN")
-	if len(token) < 32 || strings.HasPrefix(token, "replace-with") {
-		log.Fatal("DIAGRAMS_TOKEN must be a private token of at least 32 characters; npm run dev creates one in .env")
-	}
 	addr := env("DIAGRAMS_ADDR", "127.0.0.1:8787")
-	app := server.New(server.Config{
-		Token:     token,
-		Origins:   strings.Split(env("DIAGRAMS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:8787,http://localhost:8787"), ","),
-		StaticDir: env("DIAGRAMS_STATIC_DIR", "dist"),
+	app, err := server.New(server.Config{
+		PublicURL:    env("DIAGRAMS_PUBLIC_URL", "http://localhost:5173"),
+		DatabasePath: env("DIAGRAMS_DB", "data/pairings.db"),
+		StaticDir:    env("DIAGRAMS_STATIC_DIR", "dist"),
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer app.Close()
 	httpServer := &http.Server{
 		Addr: addr, Handler: app.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,

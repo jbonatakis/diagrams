@@ -1,16 +1,12 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { connectMCP } from './oauth.mjs';
 
-const token = process.env.DIAGRAMS_TOKEN;
-if (!token) throw new Error('Set DIAGRAMS_TOKEN or create .env with npm run dev.');
-const client = new Client({ name: 'diagrams-cli', version: '0.1.0' });
-await client.connect(new StreamableHTTPClientTransport(
-  new URL(process.env.DIAGRAMS_MCP_URL ?? 'http://127.0.0.1:8787/mcp'),
-  { requestInit: { headers: { Authorization: `Bearer ${token}` } } },
-));
+const connection = await connectMCP();
+const { client } = connection;
 try {
   const tool = process.argv[2] ?? 'get_diagram';
-  if (tool === 'tools') {
+  if (tool === 'login') {
+    console.log('Paired. This CLI will remember the connection.');
+  } else if (tool === 'tools') {
     console.log(JSON.stringify(await client.listTools(), null, 2));
   } else if (tool === 'demo') {
     const read = await client.callTool({ name: 'get_diagram', arguments: {} });
@@ -36,5 +32,5 @@ try {
     if (result.isError) process.exitCode = 1;
   }
 } finally {
-  await client.close();
+  await connection.close();
 }

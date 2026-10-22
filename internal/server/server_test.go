@@ -16,7 +16,7 @@ import (
 )
 
 const testToken = "test-token-for-diagrams-not-a-real-secret"
-const testOrigin = "http://diagrams.test"
+const testOrigin = "http://127.0.0.1:4180"
 
 func testServer(t *testing.T, timeout time.Duration) (*Server, *memoryHTTPServer) {
 	t.Helper()
@@ -24,22 +24,26 @@ func testServer(t *testing.T, timeout time.Duration) (*Server, *memoryHTTPServer
 	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("<html>Diagrams</html>"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	app := New(Config{Token: testToken, Origins: []string{testOrigin}, StaticDir: staticDir, CommandTimeout: timeout})
+	app, err := New(Config{PublicURL: testOrigin, DatabasePath: filepath.Join(staticDir, "pairings.db"), StaticDir: staticDir, CommandTimeout: timeout})
+	if err != nil {
+		t.Fatal(err)
+	}
 	httpServer := newMemoryHTTPServer(app.Handler())
+	httpServer.Client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	t.Cleanup(func() { app.Close(); httpServer.Close() })
 	return app, httpServer
 }
 
-func dialBrowser(t *testing.T, server *memoryHTTPServer, token, diagram string) *websocket.Conn {
+func dialBrowser(t *testing.T, server *memoryHTTPServer, browser *testBrowser, diagram string) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/bridge", &websocket.DialOptions{HTTPClient: server.Client, HTTPHeader: http.Header{"Origin": {testOrigin}}})
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/bridge", &websocket.DialOptions{HTTPClient: server.Client, HTTPHeader: http.Header{"Origin": {testOrigin}, "Cookie": {browser.Cookie.String()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	if err := wsjson.Write(ctx, conn, bridgeMessage{Type: "hello", Token: token, DiagramID: diagram}); err != nil {
+	if err := wsjson.Write(ctx, conn, bridgeMessage{Type: "hello", DiagramID: diagram}); err != nil {
 		t.Fatal(err)
 	}
 	return conn
@@ -58,20 +62,23 @@ func readReady(t *testing.T, conn *websocket.Conn) {
 	}
 }
 
-type authenticatedTransport struct{ base http.RoundTripper }
+type authenticatedTransport struct {
+	base  http.RoundTripper
+	token string
+}
 
 func (transport authenticatedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	request := r.Clone(r.Context())
-	request.Header.Set("Authorization", "Bearer "+testToken)
+	request.Header.Set("Authorization", "Bearer "+transport.token)
 	return transport.base.RoundTrip(request)
 }
 
-func mcpClient(t *testing.T, server *memoryHTTPServer) *mcp.ClientSession {
+func mcpClient(t *testing.T, server *memoryHTTPServer, token string) *mcp.ClientSession {
 	t.Helper()
 	client := mcp.NewClient(&mcp.Implementation{Name: "phase-one-test", Version: "1"}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: authenticatedTransport{server.Client.Transport}}}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: server.URL + "/mcp", HTTPClient: &http.Client{Transport: authenticatedTransport{server.Client.Transport, token}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,8 +122,10 @@ func TestAuthenticationAndOrigins(t *testing.T) {
 }
 
 func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
-	_, server := testServer(t, time.Second)
-	client := mcpClient(t, server)
+	app, server := testServer(t, time.Second)
+	identity := newBrowser(t, server)
+	credentials := pair(t, app, server, identity)
+	client := mcpClient(t, server, credentials.Access)
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx, nil)
 	if err != nil || len(tools.Tools) != 14 {
@@ -135,7 +144,7 @@ func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
 	if err != nil || !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "browser_unavailable") {
 		t.Fatalf("offline result: %+v, %v", result, err)
 	}
-	browser := dialBrowser(t, server, testToken, "diagram-one")
+	browser := dialBrowser(t, server, identity, "diagram-one")
 	readReady(t, browser)
 	seen := make(chan bridgeMessage, 1)
 	go func() {
@@ -163,20 +172,31 @@ func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBrowserAuthenticationAndExclusiveConnection(t *testing.T) {
-	_, server := testServer(t, time.Second)
-	bad := dialBrowser(t, server, "wrong-token", "bad")
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func TestBrowserIsolationAndExclusiveConnection(t *testing.T) {
+	app, server := testServer(t, time.Second)
+	identity, other := newBrowser(t, server), newBrowser(t, server)
+	first := dialBrowser(t, server, identity, "first")
+	readReady(t, first)
+	second := dialBrowser(t, server, other, "other")
+	readReady(t, second)
+	credentials := pair(t, app, server, other)
+	client := mcpClient(t, server, credentials.Access)
+	go func() {
+		var message bridgeMessage
+		if wsjson.Read(context.Background(), second, &message) == nil {
+			_ = wsjson.Write(context.Background(), second, bridgeMessage{Type: "result", ID: message.ID, Result: json.RawMessage(`{"diagramId":"other"}`)})
+		}
+	}()
+	result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_diagram", Arguments: map[string]any{}})
+	if err != nil || result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "other") {
+		t.Fatal("wrong browser routing", err)
+	}
+	duplicate := dialBrowser(t, server, identity, "duplicate")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var message bridgeMessage
-	if err := wsjson.Read(ctx, bad, &message); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
-		t.Fatalf("bad token close: %v", err)
-	}
-	first := dialBrowser(t, server, testToken, "first")
-	readReady(t, first)
-	second := dialBrowser(t, server, testToken, "second")
-	if err := wsjson.Read(ctx, second, &message); websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
-		t.Fatalf("second browser close: %v", err)
+	if err := wsjson.Read(ctx, duplicate, &message); websocket.CloseStatus(err) != websocket.StatusTryAgainLater {
+		t.Fatalf("duplicate browser close: %v", err)
 	}
 }
 
@@ -184,7 +204,12 @@ func TestDisconnectAndTimeoutReleaseRequests(t *testing.T) {
 	for _, disconnect := range []bool{false, true} {
 		t.Run(map[bool]string{false: "timeout", true: "disconnect"}[disconnect], func(t *testing.T) {
 			app, server := testServer(t, 100*time.Millisecond)
-			browser := dialBrowser(t, server, testToken, "first")
+			identity := newBrowser(t, server)
+			var browserID string
+			if err := app.db.QueryRow("SELECT id FROM browsers WHERE cookie_hash=?", digest(identity.Cookie.Value)).Scan(&browserID); err != nil {
+				t.Fatal(err)
+			}
+			browser := dialBrowser(t, server, identity, "first")
 			readReady(t, browser)
 			go func() {
 				var command bridgeMessage
@@ -192,13 +217,13 @@ func TestDisconnectAndTimeoutReleaseRequests(t *testing.T) {
 					_ = browser.CloseNow()
 				}
 			}()
-			_, err := app.bridge.call(context.Background(), "get_diagram", json.RawMessage(`{}`), 100*time.Millisecond)
+			_, err := app.bridge.call(context.Background(), browserID, "get_diagram", json.RawMessage(`{}`), 100*time.Millisecond)
 			if err == nil {
 				t.Fatal("expected a connection error")
 			}
 			app.bridge.mu.Lock()
 			defer app.bridge.mu.Unlock()
-			if app.bridge.active != nil && len(app.bridge.active.pending) != 0 {
+			if app.bridge.active[browserID] != nil && len(app.bridge.active[browserID].pending) != 0 {
 				t.Fatal("pending request leaked")
 			}
 		})

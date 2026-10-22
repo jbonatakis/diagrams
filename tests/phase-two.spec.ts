@@ -1,30 +1,25 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { connectAgent } from './connection-helpers';
 
-const token = 'phase-one-browser-test-token-not-a-secret';
 let client: Client;
 let errors: string[];
 
 test.beforeEach(async ({ page }) => {
   errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  client = new Client({ name: 'phase-two-browser-test', version: '1' });
-  await client.connect(new StreamableHTTPClientTransport(new URL('http://127.0.0.1:4180/mcp'), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
 });
 test.afterEach(async ({ page }) => {
   const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true });
   if (await disconnect.isVisible().catch(() => false)) await disconnect.click();
-  await client.close();
+  await client?.close();
   expect(errors).toEqual([]);
 });
 async function connect(page: Page, navigate = true) {
-  if (navigate) await page.goto('/');
-  await page.getByLabel('Connection token', { exact: true }).fill(token);
-  await page.getByRole('button', { name: 'Connect this canvas' }).click();
-  await expect(page.getByTestId('connection-status')).toHaveText('Connected');
+  client = await connectAgent(page, navigate);
 }
+
 async function call(name: string, args: Record<string, unknown> = {}): Promise<any> {
   const result = await client.callTool({ name, arguments: args });
   expect(result.isError, JSON.stringify(result.content)).not.toBe(true);

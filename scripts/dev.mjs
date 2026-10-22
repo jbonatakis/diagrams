@@ -1,14 +1,11 @@
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { loadEnvFile } from 'node:process';
 import './assets.mjs';
 
-if (!existsSync('.env')) {
-  writeFileSync('.env', `DIAGRAMS_TOKEN=${randomBytes(32).toString('hex')}\n`, { mode: 0o600, flag: 'wx' });
-  console.log('Created .env with a private connection token. Paste that token into Connect agent.');
-}
-loadEnvFile('.env');
+if (existsSync('.env')) loadEnvFile('.env');
+
+console.log(`Open ${process.env.DIAGRAMS_PUBLIC_URL ?? 'http://localhost:5173'} for your diagrams and agent pairing.`);
 
 mkdirSync('bin', { recursive: true });
 const binary = process.platform === 'win32' ? 'bin/diagrams.exe' : 'bin/diagrams';

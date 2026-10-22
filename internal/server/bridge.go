@@ -24,7 +24,6 @@ func (e *toolError) Error() string { return e.Message }
 type bridgeMessage struct {
 	Type      string          `json:"type"`
 	ID        string          `json:"id,omitempty"`
-	Token     string          `json:"token,omitempty"`
 	DiagramID string          `json:"diagramId,omitempty"`
 	Tool      string          `json:"tool,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
@@ -36,6 +35,7 @@ type bridgeMessage struct {
 type peer struct {
 	conn      *websocket.Conn
 	diagramID string
+	browserID string
 	done      chan struct{}
 	pending   map[string]chan bridgeMessage
 }
@@ -43,39 +43,54 @@ type peer struct {
 // bridge retains connection metadata and in-flight requests, never diagram state.
 type bridge struct {
 	mu     sync.Mutex
-	active *peer
+	active map[string]*peer
 }
 
 func (b *bridge) attach(p *peer) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.active != nil {
+	if b.active == nil {
+		b.active = make(map[string]*peer)
+	}
+	if b.active[p.browserID] != nil || len(b.active) >= 256 {
 		return false
 	}
-	b.active = p
+	b.active[p.browserID] = p
 	return true
 }
 
 func (b *bridge) detach(p *peer) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.active == p {
-		b.active = nil
+	if b.active[p.browserID] == p {
+		delete(b.active, p.browserID)
 		close(p.done)
 	}
 }
 
-func (b *bridge) close() {
+func (b *bridge) disconnect(browserID string) {
 	b.mu.Lock()
-	p := b.active
+	p := b.active[browserID]
 	b.mu.Unlock()
 	if p != nil {
 		b.detach(p)
 		_ = p.conn.CloseNow()
 	}
 }
+func (b *bridge) close() {
+	b.mu.Lock()
+	peers := make([]*peer, 0, len(b.active))
+	for _, p := range b.active {
+		peers = append(peers, p)
+	}
+	b.mu.Unlock()
+	for _, p := range peers {
+		b.detach(p)
+		_ = p.conn.CloseNow()
+	}
+}
 
-func (b *bridge) call(ctx context.Context, tool string, args json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
+func (b *bridge) call(ctx context.Context, browserID, tool string, args json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	idBytes := make([]byte, 16)
@@ -85,10 +100,10 @@ func (b *bridge) call(ctx context.Context, tool string, args json.RawMessage, ti
 	id := hex.EncodeToString(idBytes)
 	response := make(chan bridgeMessage, 1)
 	b.mu.Lock()
-	p := b.active
+	p := b.active[browserID]
 	if p == nil {
 		b.mu.Unlock()
-		return nil, &toolError{"browser_unavailable", "Open the diagram app and choose Connect agent before using this tool."}
+		return nil, &toolError{"browser_unavailable", "Open the paired browser’s diagram app before using this tool."}
 	}
 	if len(p.pending) >= 8 {
 		b.mu.Unlock()
@@ -121,8 +136,13 @@ func (b *bridge) call(ctx context.Context, tool string, args json.RawMessage, ti
 
 func (s *Server) serveBridge(w http.ResponseWriter, r *http.Request) {
 	// Browser WebSockets must originate at an explicitly configured app origin.
-	if r.Header.Get("Origin") == "" || !s.originAllowed(r.Header.Get("Origin")) {
+	if r.Header.Get("Origin") != s.config.PublicURL {
 		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return
+	}
+	browser, err := s.session(r)
+	if err != nil {
+		http.Error(w, "Browser session required", http.StatusUnauthorized)
 		return
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
@@ -137,13 +157,13 @@ func (s *Server) serveBridge(w http.ResponseWriter, r *http.Request) {
 	var hello bridgeMessage
 	err = wsjson.Read(authCtx, conn, &hello)
 	authCancel()
-	if err != nil || hello.Type != "hello" || !s.validToken(hello.Token) || len(hello.DiagramID) == 0 || len(hello.DiagramID) > 100 {
-		_ = conn.Close(websocket.StatusPolicyViolation, "Invalid connection token")
+	if err != nil || hello.Type != "hello" || len(hello.DiagramID) == 0 || len(hello.DiagramID) > 100 {
+		_ = conn.Close(websocket.StatusPolicyViolation, "Invalid browser handshake")
 		return
 	}
-	p := &peer{conn: conn, diagramID: hello.DiagramID, done: make(chan struct{}), pending: make(map[string]chan bridgeMessage)}
+	p := &peer{conn: conn, browserID: browser.ID, diagramID: hello.DiagramID, done: make(chan struct{}), pending: make(map[string]chan bridgeMessage)}
 	if !s.bridge.attach(p) {
-		_ = conn.Close(websocket.StatusPolicyViolation, "Another browser is connected. Disconnect it first.")
+		_ = conn.Close(websocket.StatusTryAgainLater, "Waiting for the previous tab to disconnect.")
 		return
 	}
 	defer s.bridge.detach(p)
@@ -158,6 +178,11 @@ func (s *Server) serveBridge(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if _, err := s.session(r); err != nil {
+					_ = conn.Close(websocket.StatusPolicyViolation, "Browser session expired")
+					cancel()
+					return
+				}
 				pingCtx, pingCancel := context.WithTimeout(ctx, 10*time.Second)
 				err := conn.Ping(pingCtx)
 				pingCancel()

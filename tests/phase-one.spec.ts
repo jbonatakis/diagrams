@@ -1,28 +1,19 @@
 import { test, expect, type Page } from '@playwright/test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { connectAgent } from './connection-helpers';
 import type { DiagramSnapshot } from '../src/editor/controller';
 import type { Operation } from '../src/protocol';
 
-const token = 'phase-one-browser-test-token-not-a-secret';
-const endpoint = 'http://127.0.0.1:4180/mcp';
 let client: Client;
 
-test.beforeEach(async () => {
-  client = new Client({ name: 'phase-one-browser-test', version: '0.1.0' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
-});
 test.afterEach(async ({ page }) => {
   const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true });
   if (await disconnect.isVisible().catch(() => false)) await disconnect.click();
-  await client.close();
+  await client?.close();
 });
 
 async function connect(page: Page) {
-  await page.goto('/');
-  await page.getByLabel('Connection token', { exact: true }).fill(token);
-  await page.getByRole('button', { name: 'Connect this canvas' }).click();
-  await expect(page.getByTestId('connection-status')).toHaveText('Connected');
+  client = await connectAgent(page);
 }
 
 async function read(): Promise<DiagramSnapshot> {
@@ -168,21 +159,22 @@ test('stale revisions and invalid batches leave the live diagram unchanged', asy
   expect(await read()).toEqual(current);
 });
 
-test('only an authenticated browser can connect and only one owns the diagram', async ({ page, browser }) => {
-  await page.goto('/');
-  await page.getByLabel('Connection token', { exact: true }).fill('wrong-token');
-  await page.getByRole('button', { name: 'Connect this canvas' }).click();
-  await expect(page.getByRole('alert')).toContainText('Invalid connection token');
+test('independent visitors connect simultaneously without sharing diagrams', async ({ page, browser }) => {
   await connect(page);
+  expect((await apply(await read(), sample)).isError).not.toBe(true);
   const first = await read();
   const secondContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4180' });
-  const second = await secondContext.newPage();
-  await second.goto('/');
-  await second.getByLabel('Connection token', { exact: true }).fill(token);
-  await second.getByRole('button', { name: 'Connect this canvas' }).click();
-  await expect(second.getByRole('alert')).toContainText('Another browser is connected');
-  expect((await read()).diagramId).toBe(first.diagramId);
-  await secondContext.close();
+  try {
+    const second = await secondContext.newPage();
+    const otherClient = await connectAgent(second);
+    const other = await otherClient.callTool({ name: 'get_diagram', arguments: {} });
+    expect(other.isError).not.toBe(true);
+    expect((other.structuredContent as DiagramSnapshot).diagramId).not.toBe(first.diagramId);
+    expect((other.structuredContent as DiagramSnapshot).elements).toEqual([]);
+    const intrusion = await otherClient.callTool({ name: 'apply_operations', arguments: { diagramId: first.diagramId, expectedRevision: first.revision, operations: [{ op: 'move', id: 'browser', x: 0, y: 0 }] } });
+    expect(intrusion.isError).toBe(true);
+    expect(await read()).toEqual(first);
+  } finally { await secondContext.close(); }
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError).toBe(true);
 });

@@ -24,8 +24,8 @@ export default defineConfig({
     env: {
       GOCACHE: resolve('.cache/go-build'),
       DIAGRAMS_ADDR: '127.0.0.1:4180',
-      DIAGRAMS_TOKEN: 'phase-one-browser-test-token-not-a-secret',
-      DIAGRAMS_ORIGINS: 'http://127.0.0.1:4180',
+      DIAGRAMS_PUBLIC_URL: 'http://127.0.0.1:4180',
+      DIAGRAMS_DB: ':memory:',
     },
   },
 });

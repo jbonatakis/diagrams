@@ -11,20 +11,27 @@ export class BrowserBridge {
 
   constructor(
     private controller: { readonly diagramId: string; execute: (command: Command) => unknown | Promise<unknown> },
-    private token: string,
+    private prepare: () => Promise<void>,
     private onStatus: (status: ConnectionStatus, error?: string) => void,
     private onActivity: (activity: Activity) => void,
   ) {}
 
-  connect() {
+  async connect() {
     if (this.stopped) return;
     this.onStatus(this.attempts ? 'reconnecting' : 'connecting');
+    try { await this.prepare(); } catch (error) {
+      if (this.stopped) return;
+      this.onStatus('reconnecting', error instanceof Error ? error.message : 'Could not reconnect.');
+      this.timer = setTimeout(() => void this.connect(), Math.min(1000 * 2 ** this.attempts++, 10000));
+      return;
+    }
+    if (this.stopped) return;
     const url = new URL('/api/bridge', window.location.href);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(url);
     this.socket = socket;
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: 'hello', token: this.token, diagramId: this.controller.diagramId }));
+      socket.send(JSON.stringify({ type: 'hello', diagramId: this.controller.diagramId }));
     };
     socket.onmessage = async (event) => {
       if (this.stopped || this.socket !== socket) return;
@@ -62,8 +69,7 @@ export class BrowserBridge {
       if (this.stopped) return;
       if (event.code === 1008) {
         this.stopped = true;
-        this.token = '';
-        this.onStatus('disconnected', event.reason || 'Connection was rejected. Check the token.');
+        this.onStatus('disconnected', event.reason || 'Connection was rejected. Reconnect this browser.');
         return;
       }
       this.onStatus('reconnecting', 'Connection interrupted. Reconnecting…');
@@ -74,7 +80,6 @@ export class BrowserBridge {
 
   disconnect() {
     this.stopped = true;
-    this.token = '';
     clearTimeout(this.timer);
     this.socket?.close(1000, 'Disconnected by user');
     this.onStatus('disconnected');

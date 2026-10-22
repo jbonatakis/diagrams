@@ -7,6 +7,8 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
+      '/oauth': { target: 'http://127.0.0.1:8787' },
+      '/.well-known': { target: 'http://127.0.0.1:8787' },
       '/api': { target: 'http://127.0.0.1:8787', ws: true },
       '/mcp': { target: 'http://127.0.0.1:8787' },
       '/healthz': { target: 'http://127.0.0.1:8787' },

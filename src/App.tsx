@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Excalidraw, MainMenu, WelcomeScreen } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
-import { BrowserBridge, type Activity, type ConnectionStatus } from './bridge';
+import { useAgentConnection, AgentConnectionPanel } from './connection';
 import { openWorkspace, type Workspace } from './library/workspace';
 import { LibraryPanel, FileActions, importFile } from './library/ui';
 import type { DiagramMeta } from './library/scene';
@@ -54,15 +54,8 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
   }
   const [api, setAPI] = useState<ExcalidrawImperativeAPI | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
-  const [token, setToken] = useState('');
-  const [status, setStatus] = useState<ConnectionStatus>('disconnected');
-  const [connectionError, setConnectionError] = useState('');
-  const [activities, setActivities] = useState<Activity[]>([]);
-  const [copied, setCopied] = useState(false);
-  const bridge = useRef<BrowserBridge | null>(null);
-  const endpoint = new URL('/mcp', window.location.href).href;
-  const connected = status === 'connected';
-  const connecting = status === 'connecting' || status === 'reconnecting';
+  const connection = useAgentConnection(workspace);
+  const connected = connection.status === 'connected';
 
   useEffect(() => {
     if (!api) return;
@@ -71,7 +64,6 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     return () => { clearTimeout(timer); detach?.(); };
   }, [api, workspace]);
 
-  useEffect(() => () => bridge.current?.disconnect(), []);
 
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -82,26 +74,6 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     document.addEventListener('visibilitychange', flush);
     return () => { window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('visibilitychange', flush); };
   }, [workspace]);
-
-  function connect(event: FormEvent) {
-    event.preventDefault();
-    if (!ready || !token.trim()) return;
-    bridge.current?.disconnect();
-    const next = new BrowserBridge(workspace, token.trim(), (nextStatus, error) => {
-      setStatus(nextStatus); setConnectionError(error ?? '');
-    }, (activity) => setActivities((previous) => [activity, ...previous].slice(0, 12)));
-    bridge.current = next;
-    next.connect();
-    setToken('');
-  }
-
-  async function copyEndpoint() {
-    try {
-      await navigator.clipboard.writeText(endpoint);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { setConnectionError('Copy the endpoint address shown below.'); }
-  }
 
   return <div className="app-shell">
     <header className="app-header">
@@ -158,29 +130,7 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
         {(state.busy || working || !ready) && <div className="canvas-busy" aria-label="Updating library" />}
       </section>
 
-      {panelOpen && <aside className="agent-panel" id="agent-panel" aria-label="Agent connection">
-        <div className="panel-heading"><div><p className="eyebrow">WORK TOGETHER</p><h2>Your agent, on canvas.</h2></div><button className="icon-button" aria-label="Close agent panel" onClick={() => setPanelOpen(false)}>×</button></div>
-        <p className="panel-intro">Give Codex a direct connection to your diagrams. You can keep drawing while it works.</p>
-        <div className={`connection-card ${connected ? 'connected' : ''}`}>
-          <div className="connection-heading"><span className={`status-dot ${connected ? 'online' : connecting ? 'pending' : ''}`} /><strong data-testid="connection-status">{connected ? 'Connected' : connecting ? 'Connecting…' : 'Not connected'}</strong></div>
-          <p>{connected ? 'Your library is ready for agent tools.' : 'Connect this browser with your server token.'}</p>
-          {!connected && !connecting ? <form onSubmit={connect}>
-            <label htmlFor="connection-token">Connection token</label>
-            <input id="connection-token" type="password" autoComplete="off" spellCheck={false} placeholder="Paste your token" value={token} onChange={(event) => setToken(event.target.value)} />
-            <button className="primary-button" disabled={!ready || !token.trim()} type="submit">Connect this canvas <span aria-hidden="true">→</span></button>
-          </form> : <button className="secondary-button" onClick={() => bridge.current?.disconnect()}>{connecting ? 'Cancel connection' : 'Disconnect'}</button>}
-          {connectionError && <p className="error-message" role="alert">{connectionError}</p>}
-        </div>
-
-        <div className="endpoint-section"><div className="section-label"><h3>MCP endpoint</h3><button className="text-button" onClick={copyEndpoint}>{copied ? 'Copied' : 'Copy'}</button></div><code className="endpoint">{endpoint}</code><p>Add this URL to Codex with the same bearer token. Your token stays in memory in this tab.</p></div>
-
-        <details className="setup-details"><summary>Connect from Codex</summary><p>Add this to your Codex MCP configuration. Set <code>DIAGRAMS_TOKEN</code> in the environment used to launch Codex.</p><pre>{`[mcp_servers.diagrams]\nurl = "${endpoint}"\nbearer_token_env_var = "DIAGRAMS_TOKEN"`}</pre><p>The development server creates the token in your project’s <code>.env</code> file.</p><a href="https://learn.chatgpt.com/docs/extend/mcp#connect-codex-to-an-mcp-server" target="_blank" rel="noreferrer">Codex connection guide ↗</a></details>
-
-        <div className="activity-section"><div className="section-label"><h3>Activity</h3><span className="small-label">THIS SESSION</span></div>
-          {activities.length === 0 ? <div className="empty-activity"><span aria-hidden="true">↔</span><p>Agent activity will appear here.</p></div> : <ol className="activity-list" aria-live="polite">{activities.map((activity) => <li key={activity.id} className={activity.error ? 'failed' : ''}><span className="activity-dot" /><div><p>{activity.label}</p><time>{activity.time}</time></div></li>)}</ol>}
-        </div>
-        <div className="prototype-note"><span className="note-icon" aria-hidden="true">i</span><p>Diagrams are saved in this browser. Export a library backup to keep a copy elsewhere. Your agent can manage diagrams and import or export files while connected.</p></div>
-      </aside>}
+      {panelOpen && <AgentConnectionPanel connection={connection} onClose={() => setPanelOpen(false)} />}
     </main>
 
     <footer className="app-footer"><span><span className="tiny-dot" />Canvas in your browser</span><span data-testid="scene-stats">{snapshot?.elements.length ?? 0} elements <span className="footer-separator">/</span> Revision {snapshot?.revision ?? 0}</span><span className="footer-hint">Space + drag to pan <span className="footer-separator">·</span> ⌘ / Ctrl + Z to undo</span></footer>
