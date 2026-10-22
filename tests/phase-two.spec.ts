@@ -262,7 +262,12 @@ test('storage failure keeps the live canvas exportable and retries without corru
   const before = await stored(page, created.diagramId);
   await page.evaluate(() => sessionStorage.setItem('test-quota', 'yes'));
   const current = await call('get_diagram');
-  await call('apply_operations', { diagramId: current.diagramId, expectedRevision: current.revision, operations: [{ op: 'move', id: 'box', x: 300, y: 420 }] });
+  const args = { diagramId: current.diagramId, expectedRevision: current.revision, requestId: 'quota-edit', operations: [{ op: 'move', id: 'box', x: 300, y: 420 }] };
+  const edited = await call('apply_operations', args);
+  expect(edited).toMatchObject({ saveStatus: 'error', replayed: false });
+  expect(edited.saveError).toContain('storage is full');
+  const retry = await call('apply_operations', args);
+  expect(retry).toMatchObject({ saveStatus: 'error', replayed: true, appliedRevision: edited.appliedRevision });
   await expect(page.getByTestId('save-status')).toHaveText('Save failed');
   await expect(page.getByRole('alert')).toContainText('storage is full');
   expect(await stored(page, created.diagramId)).toEqual(before);
@@ -272,6 +277,8 @@ test('storage failure keeps the live canvas exportable and retries without corru
   await page.getByRole('button', { name: 'Retry saving', exact: true }).click();
   await expect(page.getByTestId('save-status')).toHaveText('Saved in browser');
   expect((await stored(page, created.diagramId)).scene.elements.find((e: any) => e.id === 'box').y).toBe(420);
+  await page.reload(); await connect(page, false);
+  expect(await call('apply_operations', args)).toMatchObject({ replayed: true, saveStatus: 'saved', appliedRevision: edited.appliedRevision });
 });
 
 test('a second tab cannot overwrite the same browser library and can retry after the first closes', async ({ page, context }) => {

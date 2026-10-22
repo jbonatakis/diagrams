@@ -1,6 +1,6 @@
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { DiagramController } from '../editor/controller';
-import { CommandError, validateArguments, type Command } from '../protocol';
+import { CommandError, validateArguments, type ApplyArguments, type Command, type ViewArguments } from '../protocol';
 import { DiagramStorage, storageError } from './storage';
 import { Transfers } from './transfers';
 import { byteLength, diagramName, emptyScene, exportDiagram, MAX_DOCUMENT_BYTES, MAX_LIBRARY_BYTES, parseJSON, parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene } from './scene';
@@ -9,7 +9,17 @@ const makeDiagram = (name: string, scene = emptyScene()): Diagram => {
   const now = new Date().toISOString();
   return { id: crypto.randomUUID(), name, revision: 0, storageVersion: 1, createdAt: now, updatedAt: now, deletedAt: null, scene };
 };
-const metadata = ({ scene: _scene, ...meta }: Diagram): DiagramMeta => meta;
+const metadata = ({ scene: _scene, operationReceipts: _receipts, ...meta }: Diagram): DiagramMeta => meta;
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+  if (value && typeof value === 'object') return '{' + Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => JSON.stringify(key) + ':' + canonical(item)).join(',') + '}';
+  return JSON.stringify(value);
+}
+async function operationFingerprint(args: ApplyArguments) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical(args)));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
 type SaveStatus = 'saved' | 'unsaved' | 'saving' | 'error';
 
 export class Workspace {
@@ -159,7 +169,31 @@ export class Workspace {
       if (!this.controller) throw new CommandError('editor_loading', 'The editor is still loading.');
       const tool = command.tool;
       if (tool === 'get_diagram') return { ...this.controller.snapshot(), name: this.active.name, saveStatus: this.status };
-      if (tool === 'apply_operations') return { ...this.controller.execute(command), name: this.active.name, saveStatus: this.status };
+      if (tool === 'fit_canvas') return this.controller.fit(command.arguments as ViewArguments);
+      if (tool === 'preview_diagram') return this.controller.preview(command.arguments as ViewArguments);
+      if (tool === 'apply_operations') {
+        const args = command.arguments as ApplyArguments;
+        if (args.diagramId !== this.active.id) throw new CommandError('diagram_changed', 'Read the active diagram before editing.');
+        const fingerprint = args.requestId ? await operationFingerprint(args) : undefined;
+        const previous = args.requestId && this.active.operationReceipts?.find(receipt => receipt.id === args.requestId);
+        if (previous) {
+          if (previous.fingerprint !== fingerprint) throw new CommandError('request_id_conflict', 'This requestId was already used with different arguments. Use a new ID for a new edit.');
+          await this.flush().catch(() => {});
+          return { ...this.controller.snapshot(), name: this.active.name, saveStatus: this.status, saveError: this.error || undefined,
+            replayed: true, appliedRevision: previous.revision, copies: previous.copies };
+        }
+        const result = this.controller.execute(command);
+        if (args.requestId) {
+          this.active.operationReceipts = [...(this.active.operationReceipts ?? []), { id: args.requestId, fingerprint: fingerprint!, revision: result.revision, copies: result.copies ?? [] }].slice(-128);
+          this.changed();
+        }
+        // Receipts and scene data are saved in the same IndexedDB transaction.
+        // A storage failure does not undo the successful canvas edit. Report
+        // its save status so agents can rescue it instead of applying it again.
+        await this.flush().catch(() => {});
+        return { ...this.controller.snapshot(), copies: result.copies, name: this.active.name, saveStatus: this.status,
+          saveError: this.error || undefined, replayed: false, appliedRevision: result.revision };
+      }
       const mutating = ['create_diagram', 'open_diagram', 'manage_diagram', 'import_diagram', 'import_library'].includes(tool);
       if (mutating) { this.controller.assertIdle(); this.busy = true; this.notify(); }
       try { return await this.perform(tool, command.arguments as Record<string, any>, command.deadline); }
@@ -177,7 +211,7 @@ export class Workspace {
   private async perform(tool: string, args: Record<string, any>, deadline: number): Promise<unknown> {
     if (tool === 'list_diagrams') {
       await this.flush();
-      return { activeDiagramId: this.active.id, activeRevision: this.controller!.revision, diagrams: this.documents.filter((item) => args.includeTrash || !item.deletedAt).map(({ storageVersion: _version, ...meta }) => meta) };
+      return { activeDiagramId: this.active.id, activeRevision: this.controller!.revision, diagrams: this.documents.filter((item) => args.includeTrash || !item.deletedAt).map(({ storageVersion: _version, operationReceipts: _receipts, ...meta }) => meta) };
     }
     if (tool === 'release_transfer') { this.transfers.finish(args.transferId); return { released: true }; }
     if (tool === 'read_export') return this.transfers.read(args.artifactId, args.offset ?? 0, args.length ?? 16_000);

@@ -1,140 +1,222 @@
 import { convertToExcalidrawElements, newElementWith, restoreElements } from '@excalidraw/excalidraw';
-import type { ExcalidrawElement, ExcalidrawArrowElement } from '@excalidraw/excalidraw/element/types';
-import { CommandError, type Operation, type ConnectOperation } from '../protocol';
+import type { ExcalidrawArrowElement } from '@excalidraw/excalidraw/element/types';
+import { CommandError, type ElementChanges, type Operation, type Point } from '../protocol';
+import { bounds, editable, isArrow, isLinear, isShape, measureText, newID, reflowLabel, required, style, withLabels, type Element, type Skeleton } from './elements';
+import { geometry, makeArrow, repairReferences, routeArrow, updateAttached, worldPoints } from './connectors';
 
-type Skeleton = NonNullable<Parameters<typeof convertToExcalidrawElements>[0]>[number];
-type Shape = Extract<ExcalidrawElement, { type: 'rectangle' | 'ellipse' | 'diamond' }>;
-type Point = readonly [number, number];
+function replace(elements: Element[], element: Element) { return elements.map(e => e.id === element.id ? element : e); }
+function roots(elements: Element[], ids: string[]) { return ids.map(id => { const e = required(elements, id); editable(e); return e; }); }
 
-const isShape = (element: ExcalidrawElement): element is Shape => ['rectangle', 'ellipse', 'diamond'].includes(element.type);
-const center = (element: ExcalidrawElement): Point => [element.x + element.width / 2, element.y + element.height / 2];
-
-function edgePoint(shape: Shape, toward: Point): Point {
-  const [cx, cy] = center(shape);
-  const cos = Math.cos(shape.angle), sin = Math.sin(shape.angle);
-  const worldX = toward[0] - cx, worldY = toward[1] - cy;
-  if (Math.hypot(worldX, worldY) < 0.01) throw new CommandError('overlapping_shapes', 'Connected shapes need different center positions.');
-  const dx = worldX * cos + worldY * sin, dy = -worldX * sin + worldY * cos;
-  const rx = Math.max(shape.width / 2, 1), ry = Math.max(shape.height / 2, 1);
-  const scale = shape.type === 'ellipse'
-    ? 1 / Math.sqrt((dx / rx) ** 2 + (dy / ry) ** 2)
-    : shape.type === 'diamond'
-      ? 1 / (Math.abs(dx) / rx + Math.abs(dy) / ry)
-      : 1 / Math.max(Math.abs(dx) / rx, Math.abs(dy) / ry);
-  const gap = 8 / Math.hypot(worldX, worldY);
-  return [cx + worldX * (scale + gap), cy + worldY * (scale + gap)];
-}
-
-function required(elements: ExcalidrawElement[], id: string): ExcalidrawElement {
-  const element = elements.find((item) => item.id === id && !item.isDeleted);
-  if (!element) throw new CommandError('element_not_found', `No live element has ID ${id}. Read get_diagram for current IDs.`);
-  return element;
-}
-
-function bindable(elements: ExcalidrawElement[], id: string): Shape {
-  const element = required(elements, id);
-  if (!isShape(element)) throw new CommandError('unsupported_shape', `Element ${id} must be a rectangle, ellipse, or diamond.`);
-  return element;
-}
-
-function assertNewID(elements: ExcalidrawElement[], id: string) {
-  if (elements.some((item) => item.id === id)) throw new CommandError('duplicate_id', `ID ${id} already exists, including undo history. Use a new ID.`);
-}
-
-// Use the editor's native binding constructor so human drags continue to update arrows.
-// Only copies enter the constructor; no live scene element is mutated during planning.
-function makeArrow(elements: ExcalidrawElement[], operation: ConnectOperation): ExcalidrawArrowElement {
-  const from = bindable(elements, operation.fromId), to = bindable(elements, operation.toId);
-  if (from.id === to.id) throw new CommandError('self_connection', 'Self connections are not supported in phase 1.');
-  const start = edgePoint(from, center(to)), end = edgePoint(to, center(from));
-  const converted = convertToExcalidrawElements([
-    from, to,
-    {
-      type: 'arrow', id: operation.id, x: start[0], y: start[1],
-      points: [[0, 0], [end[0] - start[0], end[1] - start[1]]],
-      start: { id: from.id }, end: { id: to.id },
-      strokeColor: operation.stroke ?? '#536357', strokeStyle: operation.strokeStyle ?? 'solid',
-      strokeWidth: operation.strokeWidth ?? 2, roughness: 0,
-      startArrowhead: operation.startArrowhead === 'none' ? null : operation.startArrowhead ?? null,
-      endArrowhead: operation.endArrowhead === 'none' ? null : operation.endArrowhead ?? 'arrow',
-    },
-  ] as Skeleton[], { regenerateIds: false });
-  const arrow = converted.find((item) => item.id === operation.id);
-  if (arrow?.type !== 'arrow') throw new CommandError('binding_failed', 'Could not construct the connector.');
-  // Binding can shift the first point away from [0, 0] without updating the
-  // origin or dimensions. Apply the native restore normalization now so a
-  // later save/load reports identical geometry. Keep bindings to shapes that
-  // are outside this one-element array (repairBindings must remain disabled).
-  const [normalized] = restoreElements([{ ...arrow, elbowed: false }], null, { repairBindings: false });
-  if (normalized?.type !== 'arrow') throw new CommandError('binding_failed', 'Could not normalize the connector.');
-  return { ...normalized, type: 'arrow', elbowed: false };
-}
-
-function move(elements: ExcalidrawElement[], id: string, x: number, y: number): ExcalidrawElement[] {
-  const element = required(elements, id);
-  if (!isShape(element) && !(element.type === 'text' && !element.containerId)) {
-    throw new CommandError('unsupported_move', 'Agent moves currently support basic shapes and standalone text. Move other elements using the canvas.');
+function translate(elements: Element[], ids: string[], dx: number, dy: number): Element[] {
+  roots(elements, ids);
+  const selected = withLabels(elements, ids);
+  for (const e of elements) if (selected.has(e.id) && e.locked) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before moving it.');
+  let result = elements.map(e => selected.has(e.id) ? newElementWith(e, { x: e.x + dx, y: e.y + dy }) : e);
+  // Containers carry labels. Arrows selected with their shapes are translated
+  // once, then their endpoint geometry is recomputed from the final shape positions.
+  for (const e of result) if (selected.has(e.id) && isArrow(e)) {
+    result = replace(result, routeArrow(result, e)); result = reflowLabel(result, e.id);
   }
-  if (element.locked) throw new CommandError('element_locked', `Unlock ${id} before moving it.`);
-  const arrows = elements.filter((item): item is ExcalidrawArrowElement => item.type === 'arrow' && !item.isDeleted && (item.startBinding?.elementId === id || item.endBinding?.elementId === id));
-  for (const arrow of arrows) {
-    if (arrow.elbowed || arrow.points.length !== 2 || arrow.angle !== 0 || !arrow.startBinding || !arrow.endBinding) {
-      throw new CommandError('unsupported_connection', 'This shape has an elbow, bent, rotated, or partly unbound arrow. Move it on the canvas for now.');
+  return updateAttached(result, selected, new Set(result.filter(e => selected.has(e.id) && isArrow(e)).map(e => e.id)));
+}
+
+function update(elements: Element[], id: string, changes: ElementChanges): Element[] {
+  const original = required(elements, id); editable(original);
+  const textKeys = ['text', 'fontSize', 'textAlign'].some(key => key in changes);
+  const connectorKeys = ['fromId', 'toId', 'routing', 'startArrowhead', 'endArrowhead'].some(key => key in changes);
+  if (connectorKeys && original.type !== 'arrow') throw new CommandError('unsupported_property', 'Endpoint bindings, routing, and arrowheads require an arrow.');
+  if (changes.points && !isLinear(original)) throw new CommandError('unsupported_property', 'Points can only be edited on lines and arrows.');
+  if (textKeys && original.type !== 'text' && !isShape(original) && original.type !== 'arrow') throw new CommandError('unsupported_property', 'Text styling requires standalone text or a shape/arrow label.');
+  if (original.type === 'text' && changes.height !== undefined) throw new CommandError('unsupported_property', 'Text height is measured automatically; change fontSize, text, or width.');
+  const geometryKeys = ['x', 'y', 'width', 'height', 'angle'].some(key => key in changes);
+  if (geometryKeys && !isShape(original) && !isLinear(original) && original.type !== 'text' && original.type !== 'image') throw new CommandError('unsupported_geometry', 'Resize and rotation support basic shapes, text, lines, arrows, and images. Use translate to move other elements.');
+  if (original.type === 'arrow' && (changes.routing === 'elbow' || (original as ExcalidrawArrowElement).elbowed) && changes.angle !== undefined && changes.angle !== 0) throw new CommandError('unsupported_rotation', 'Elbow arrows keep horizontal and vertical segments. Rotate their shapes instead.');
+  if (original.type === 'arrow' && (original.startBinding || original.endBinding) && changes.angle !== undefined && changes.angle !== 0) throw new CommandError('unsupported_rotation', 'Detach bound arrow endpoints before rotating the arrow.');
+  let next = newElementWith(original, { ...style(changes),
+    ...(changes.x === undefined ? {} : { x: changes.x }), ...(changes.y === undefined ? {} : { y: changes.y }),
+    ...(changes.width === undefined ? {} : { width: changes.width }), ...(changes.height === undefined ? {} : { height: changes.height }),
+    ...(changes.angle === undefined ? {} : { angle: changes.angle as Element['angle'] }),
+  });
+  if (next.type === 'text') next = measureText(next, changes.text ?? next.originalText, changes);
+  if (next.type === 'line' || next.type === 'arrow') {
+    if (changes.points && geometryKeys) throw new CommandError('conflicting_geometry', 'Set points or position/size/rotation in one operation, not both.');
+    if (changes.points) next = newElementWith(next, geometry(changes.points));
+    else if (changes.width !== undefined || changes.height !== undefined) {
+      if ((!original.width && changes.width !== undefined) || (!original.height && changes.height !== undefined)) throw new CommandError('invalid_geometry', 'Use points to resize a line along an axis with zero extent.');
+      const scaled = next.points.map(([x, y]) => [x * (changes.width === undefined ? 1 : changes.width / original.width), y * (changes.height === undefined ? 1 : changes.height / original.height)]) as typeof next.points;
+      next = newElementWith(next, { points: scaled });
     }
-    bindable(elements, arrow.startBinding.elementId);
-    bindable(elements, arrow.endBinding.elementId);
+    if (next.type === 'arrow') {
+      const binding = (value: string | null | undefined, old: ExcalidrawArrowElement['startBinding']) => {
+        if (value === undefined) return old;
+        if (value === null) return null;
+        const target = required(elements, value);
+        if (!isShape(target)) throw new CommandError('unsupported_shape', 'Arrow endpoints must bind to a basic shape.');
+        return { elementId: value, focus: 0, gap: 8 };
+      };
+      next = newElementWith(next, {
+        startBinding: binding(changes.fromId, next.startBinding), endBinding: binding(changes.toId, next.endBinding),
+        ...(changes.startArrowhead === undefined ? {} : { startArrowhead: changes.startArrowhead === 'none' ? null : changes.startArrowhead }),
+        ...(changes.endArrowhead === undefined ? {} : { endArrowhead: changes.endArrowhead === 'none' ? null : changes.endArrowhead }),
+      });
+      if (changes.routing !== undefined) {
+        const points = worldPoints(next);
+        next = newElementWith(next, { ...geometry([points[0], points[points.length - 1]]), elbowed: changes.routing === 'elbow' } as Partial<ExcalidrawArrowElement>);
+      }
+      if (geometryKeys || changes.points || changes.fromId !== undefined || changes.toId !== undefined || changes.routing !== undefined) {
+        next = routeArrow(elements, next as ExcalidrawArrowElement, changes.fromId !== undefined || changes.toId !== undefined || changes.routing !== undefined);
+      }
+    }
   }
-  const dx = x - element.x, dy = y - element.y;
-  let result = elements.map((item) => item.id === id || (item.type === 'text' && item.containerId === id)
-    ? newElementWith(item, { x: item.x + dx, y: item.y + dy }) : item);
-  for (const arrow of arrows) {
-    const fresh = makeArrow(result, {
-      op: 'connect', id: arrow.id, fromId: arrow.startBinding!.elementId, toId: arrow.endBinding!.elementId,
-    });
-    const nextArrow = newElementWith(arrow, {
-      x: fresh.x, y: fresh.y, width: fresh.width, height: fresh.height,
-      // A move changes geometry, not which shapes the arrow is bound to.
-      // Recreating bindings also changes their focus/gap and causes native undo
-      // to unbind/rebind both shapes, redrawing this connector twice.
-      points: fresh.points,
-    });
-    const oldMid = center(arrow), newMid = center(nextArrow);
-    result = result.map((item) => item.id === arrow.id ? nextArrow
-      : item.type === 'text' && item.containerId === arrow.id
-        ? newElementWith(item, { x: item.x + newMid[0] - oldMid[0], y: item.y + newMid[1] - oldMid[1] })
-        : item);
-  }
-  return result;
+  let result = replace(elements, next);
+  if (isShape(next) || next.type === 'arrow') result = reflowLabel(result, id, changes.text, changes);
+  // Text labels may grow a container, so update attached arrows after measurement.
+  if (geometryKeys || textKeys) result = updateAttached(result, new Set([id]));
+  return repairReferences(result);
 }
 
-export function planOperations(current: readonly ExcalidrawElement[], operations: Operation[]): ExcalidrawElement[] {
+function remove(elements: Element[], ids: string[]) {
+  roots(elements, ids);
+  const selected = withLabels(elements, ids);
+  for (const e of elements) if (!e.isDeleted && e.type === 'arrow' && [e.startBinding?.elementId, e.endBinding?.elementId].some(id => id && selected.has(id))) selected.add(e.id);
+  const all = withLabels(elements, [...selected]);
+  for (const e of elements) if (all.has(e.id) && e.locked) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before deleting it.');
+  return repairReferences(elements.map(e => all.has(e.id) ? newElementWith(e, { isDeleted: true }) : e));
+}
+
+function duplicate(elements: Element[], op: Extract<Operation, { op: 'duplicate' }>) {
+  const selected = withLabels(elements, op.ids);
+  for (const e of elements) if (!e.isDeleted && e.type === 'arrow' && e.startBinding && e.endBinding && selected.has(e.startBinding.elementId) && selected.has(e.endBinding.elementId)) selected.add(e.id);
+  const all = withLabels(elements, [...selected]);
+  const source = elements.filter(e => !e.isDeleted && all.has(e.id));
+  const mapping = new Map(source.map((e, index) => [e.id, op.idPrefix + '-' + (index + 1)]));
+  for (const id of mapping.values()) newID(elements, id);
+  const groups = new Map<string, string>();
+  const copies = source.map(e => {
+    const copy = structuredClone(e);
+    const remap = (id: string | null) => id ? mapping.get(id) ?? null : null;
+    const groupIds = e.groupIds.map(group => {
+      if (!groups.has(group)) groups.set(group, crypto.randomUUID());
+      return groups.get(group)!;
+    });
+    return { ...copy, id: mapping.get(e.id)!, x: e.x + (op.dx ?? 40), y: e.y + (op.dy ?? 40),
+      index: null, version: 1, versionNonce: Math.floor(Math.random() * 2 ** 31), updated: Date.now(), groupIds,
+      frameId: remap(e.frameId), boundElements: e.boundElements?.filter(b => mapping.has(b.id)).map(b => ({ ...b, id: mapping.get(b.id)! })) ?? null,
+      ...(e.type === 'text' ? { containerId: remap(e.containerId) } : {}),
+      ...(e.type === 'arrow' ? {
+        startBinding: e.startBinding && mapping.has(e.startBinding.elementId) ? { ...e.startBinding, elementId: mapping.get(e.startBinding.elementId)! } : null,
+        endBinding: e.endBinding && mapping.has(e.endBinding.elementId) ? { ...e.endBinding, elementId: mapping.get(e.endBinding.elementId)! } : null,
+      } : {}),
+    } as Element;
+  });
+  return { elements: repairReferences([...elements, ...copies]), copies: [...mapping].map(([sourceId, id]) => ({ sourceId, id })) };
+}
+
+function organize(elements: Element[], operation: Extract<Operation, { op: 'align' | 'distribute' }>) {
+  const selected = roots(elements, operation.ids);
+  const boxes = selected.map(e => ({ e, b: bounds(elements, [e]) }));
+  const offsets = new Map<string, Point>();
+  if (operation.op === 'align') {
+    const common = bounds(elements, selected);
+    for (const { e, b } of boxes) {
+      const alignment = operation.alignment;
+      offsets.set(e.id, [alignment === 'left' ? common[0] - b[0] : alignment === 'center' ? (common[0] + common[2] - b[0] - b[2]) / 2 : alignment === 'right' ? common[2] - b[2] : 0,
+        alignment === 'top' ? common[1] - b[1] : alignment === 'middle' ? (common[1] + common[3] - b[1] - b[3]) / 2 : alignment === 'bottom' ? common[3] - b[3] : 0]);
+    }
+  } else {
+    const axis = operation.axis === 'horizontal' ? 0 : 1;
+    boxes.sort((a, b) => a.b[axis] - b.b[axis] || a.e.id.localeCompare(b.e.id));
+    const total = boxes.reduce((sum, { b }) => sum + b[axis + 2] - b[axis], 0);
+    const gap = (boxes[boxes.length - 1].b[axis + 2] - boxes[0].b[axis] - total) / (boxes.length - 1);
+    if (gap < 0) throw new CommandError('insufficient_space', 'Move the outer elements farther apart before distributing with equal gaps.');
+    let cursor = boxes[0].b[axis];
+    for (const { e, b } of boxes) {
+      offsets.set(e.id, axis === 0 ? [cursor - b[0], 0] : [0, cursor - b[1]]);
+      cursor += b[axis + 2] - b[axis] + gap;
+    }
+  }
+  const selectedIDs = new Set(selected.map(e => e.id));
+  let result = elements.map(e => {
+    const delta = offsets.get(e.id) ?? (e.type === 'text' && e.containerId ? offsets.get(e.containerId) : undefined);
+    if (!delta || (!delta[0] && !delta[1])) return e;
+    if (e.locked) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before aligning it.');
+    return newElementWith(e, { x: e.x + delta[0], y: e.y + delta[1] });
+  });
+  for (const e of result) if (selectedIDs.has(e.id) && isArrow(e)) { result = replace(result, routeArrow(result, e)); result = reflowLabel(result, e.id); }
+  return updateAttached(result, selectedIDs, selectedIDs);
+}
+
+export function planOperations(current: readonly Element[], operations: Operation[]) {
   let elements = [...current];
+  const copies: { sourceId: string; id: string }[] = [];
   for (const operation of operations) {
     switch (operation.op) {
       case 'create_shape': {
-        assertNewID(elements, operation.id);
+        newID(elements, operation.id);
         const created = convertToExcalidrawElements([{
           type: operation.shape, id: operation.id, x: operation.x, y: operation.y,
-          width: operation.width ?? 180, height: operation.height ?? 100,
-          strokeColor: operation.stroke ?? '#39483d', backgroundColor: operation.fill ?? '#e9f0e5',
-          strokeWidth: 2, fillStyle: 'solid', roughness: 0,
-          ...(operation.label ? { label: { text: operation.label, fontFamily: 2, fontSize: 20 } } : {}),
-        }], { regenerateIds: false });
-        elements = [...elements, ...created];
-        break;
+          width: operation.width ?? 180, height: operation.height ?? 100, angle: (operation.angle ?? 0) as Element['angle'],
+          strokeColor: '#39483d', backgroundColor: '#e9f0e5', strokeWidth: 2, fillStyle: 'solid', roughness: 0, ...style(operation),
+        } as Skeleton], { regenerateIds: false });
+        elements = reflowLabel([...elements, ...created], operation.id, operation.label, operation); break;
+      }
+      case 'create_text': {
+        newID(elements, operation.id);
+        if (!operation.text.trim()) throw new CommandError('empty_text', 'Standalone text must contain visible text.');
+        const [created] = convertToExcalidrawElements([{ type: 'text', id: operation.id, x: operation.x, y: operation.y,
+          text: operation.text, fontFamily: 2, fontSize: operation.fontSize ?? 20, textAlign: operation.textAlign ?? 'left', roughness: 0,
+          ...style(operation) } as Skeleton], { regenerateIds: false });
+        if (created.type !== 'text') throw new CommandError('invalid_text', 'Could not create text.');
+        elements.push(measureText(newElementWith(created, { x: operation.x, y: operation.y }), operation.text, operation)); break;
+      }
+      case 'create_line': {
+        newID(elements, operation.id);
+        if (operation.kind !== 'arrow' && (operation.startArrowhead || operation.endArrowhead)) throw new CommandError('unsupported_property', 'Arrowheads require kind arrow.');
+        const created = convertToExcalidrawElements([{ type: operation.kind ?? 'line', id: operation.id,
+          ...geometry(operation.points), strokeColor: '#536357', strokeWidth: 2, roughness: 0, ...style(operation),
+          startArrowhead: operation.startArrowhead === 'none' ? null : operation.startArrowhead ?? null,
+          endArrowhead: operation.endArrowhead === 'none' ? null : operation.endArrowhead ?? (operation.kind === 'arrow' ? 'arrow' : null),
+        } as Skeleton], { regenerateIds: false });
+        const normalized = restoreElements(created, null, { repairBindings: false });
+        elements.push(...normalized.map(e => newElementWith(e, geometry(operation.points)))); break;
       }
       case 'connect': {
-        assertNewID(elements, operation.id);
-        const arrow = makeArrow(elements, operation);
-        elements = elements.map((item) => item.id === operation.fromId || item.id === operation.toId
-          ? newElementWith(item, { boundElements: [...(item.boundElements ?? []), { id: arrow.id, type: 'arrow' }] }) : item);
-        elements.push(arrow);
-        break;
+        newID(elements, operation.id);
+        elements = repairReferences([...elements, makeArrow(elements, operation)]);
+        elements = reflowLabel(elements, operation.id, operation.label, operation); break;
       }
-      case 'move':
-        elements = move(elements, operation.id, operation.x, operation.y);
-        break;
+      case 'move': {
+        const e = required(elements, operation.id);
+        elements = translate(elements, [e.id], operation.x - e.x, operation.y - e.y); break;
+      }
+      case 'translate': elements = translate(elements, operation.ids, operation.dx, operation.dy); break;
+      case 'update': elements = update(elements, operation.id, operation.changes); break;
+      case 'delete': elements = remove(elements, operation.ids); break;
+      case 'duplicate': { const result = duplicate(elements, operation); elements = result.elements; copies.push(...result.copies); break; }
+      case 'group': {
+        roots(elements, operation.ids);
+        if (elements.some(e => e.groupIds.includes(operation.groupId))) throw new CommandError('duplicate_group', 'Use a fresh groupId.');
+        const ids = withLabels(elements, operation.ids);
+        const existing = new Set(elements.filter(e => ids.has(e.id)).flatMap(e => [...e.groupIds]));
+        if (elements.some(e => !e.isDeleted && !ids.has(e.id) && e.groupIds.some(id => existing.has(id)))) throw new CommandError('partial_group', 'Include every member of existing groups, or ungroup them first.');
+        for (const e of elements) if (ids.has(e.id) && e.locked) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before grouping.');
+        elements = elements.map(e => ids.has(e.id) ? newElementWith(e, { groupIds: [...e.groupIds, operation.groupId] }) : e); break;
+      }
+      case 'ungroup': {
+        for (const id of operation.groupIds) if (!elements.some(e => !e.isDeleted && e.groupIds.includes(id))) throw new CommandError('group_not_found', 'No live group has ID ' + id);
+        elements = elements.map(e => {
+          if (e.isDeleted || !e.groupIds.some(id => operation.groupIds.includes(id))) return e;
+          if (e.locked) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before ungrouping.');
+          return newElementWith(e, { groupIds: e.groupIds.filter(id => !operation.groupIds.includes(id)) });
+        }); break;
+      }
+      case 'align': case 'distribute': elements = organize(elements, operation); break;
     }
   }
-  return elements;
+  if (elements.length > 10000) throw new CommandError('element_limit', 'A diagram supports at most 10,000 elements including undo history.');
+  for (const e of elements) {
+    if (e.isDeleted) continue;
+    if (![e.x, e.y, e.width, e.height, e.angle].every(Number.isFinite) || Math.abs(e.x) > 1000000 || Math.abs(e.y) > 1000000 || e.width < 0 || e.height < 0 || e.width > 1000000 || e.height > 1000000) throw new CommandError('invalid_geometry', 'The edit exceeds the supported canvas coordinates.');
+  }
+  return { elements, copies };
 }

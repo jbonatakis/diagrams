@@ -1,9 +1,11 @@
-import { CaptureUpdateAction } from '@excalidraw/excalidraw';
+import { CaptureUpdateAction, exportToCanvas } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 import { flushSync } from 'react-dom';
-import { CommandError, validateArguments, type ApplyArguments, type Command } from '../protocol';
+import { CommandError, validateArguments, type ApplyArguments, type Command, type ViewArguments } from '../protocol';
 import { planOperations } from './operations';
+import { bounds, isArrow, selectedElements } from './elements';
+import { worldPoints } from './connectors';
 import { savedAppState, type Diagram, type Scene } from '../library/scene';
 
 function fingerprint(elements: readonly ExcalidrawElement[]) {
@@ -94,6 +96,8 @@ export class DiagramController {
     const byId = new Map(elements.map((element) => [element.id, element]));
     return {
       diagramId: this.diagramId, revision: this.revision,
+      selectedElementIds: Object.keys(this.api.getAppState().selectedElementIds).filter(id => byId.has(id)),
+      viewport: { scrollX: this.api.getAppState().scrollX, scrollY: this.api.getAppState().scrollY, zoom: this.api.getAppState().zoom.value },
       elements: elements.filter((item) => !(item.type === 'text' && item.containerId)).map((item) => {
         const textId = item.boundElements?.find((bound) => bound.type === 'text')?.id;
         const label = textId ? byId.get(textId) : undefined;
@@ -101,31 +105,69 @@ export class DiagramController {
           id: item.id, type: item.type, x: item.x, y: item.y, width: item.width, height: item.height,
           angle: item.angle, locked: item.locked,
           label: item.type === 'text' ? item.text : label?.type === 'text' ? label.text : undefined,
+          text: item.type === 'text' ? item.originalText : label?.type === 'text' ? label.originalText : undefined,
+          fontSize: item.type === 'text' ? item.fontSize : label?.type === 'text' ? label.fontSize : undefined,
+          textAlign: item.type === 'text' ? item.textAlign : label?.type === 'text' ? label.textAlign : undefined,
+          groupIds: item.groupIds, fillStyle: item.fillStyle, opacity: item.opacity, roughness: item.roughness,
           stroke: item.strokeColor, fill: item.backgroundColor, strokeStyle: item.strokeStyle, strokeWidth: item.strokeWidth,
+          ...(item.type === 'arrow' || item.type === 'line' ? { points: worldPoints(item) } : {}),
           ...(item.type === 'arrow' ? {
             fromId: item.startBinding?.elementId ?? null, toId: item.endBinding?.elementId ?? null,
             startArrowhead: item.startArrowhead, endArrowhead: item.endArrowhead,
-            points: item.points.map(([x, y]) => [item.x + x, item.y + y]),
+            routing: isArrow(item) && item.elbowed ? 'elbow' : 'straight',
           } : {}),
         };
       }),
     };
   }
 
+  private viewTargets(args: ViewArguments) {
+    if (args.diagramId !== this.diagramId) throw new CommandError('diagram_changed', 'The active diagram changed. Read it again.');
+    const ids = args.selectionOnly ? Object.keys(this.api.getAppState().selectedElementIds) : args.elementIds;
+    const elements = selectedElements(this.api.getSceneElements(), ids);
+    if (!elements.length) throw new CommandError('empty_selection', 'There are no elements to display. Choose elements or draw something first.');
+    return elements;
+  }
+
+  fit(args: ViewArguments) {
+    this.assertIdle();
+    const elements = this.viewTargets(args);
+    flushSync(() => this.api.scrollToContent(elements, { fitToContent: true, viewportZoomFactor: 0.85, maxZoom: 2, animate: false }));
+    const state = this.api.getAppState();
+    return { diagramId: this.diagramId, revision: this.revision, viewport: { scrollX: state.scrollX, scrollY: state.scrollY, zoom: state.zoom.value } };
+  }
+
+  async preview(args: ViewArguments) {
+    this.observe();
+    const elements = structuredClone(this.viewTargets(args));
+    const revision = this.revision;
+    const sceneBounds = bounds(elements);
+    const canvas = await exportToCanvas({ elements, files: structuredClone(this.api.getFiles()),
+      appState: { ...savedAppState(this.api.getAppState()), exportBackground: true, exportWithDarkMode: false },
+      maxWidthOrHeight: args.maxSize ?? 1200, exportPadding: 20 });
+    let dataURL = canvas.toDataURL('image/png');
+    if (dataURL.length > 2_000_000) dataURL = canvas.toDataURL('image/jpeg', 0.8);
+    if (dataURL.length > 2_000_000) throw new CommandError('preview_too_large', 'Request a smaller maxSize or fewer elements for this preview.');
+    const mimeType = dataURL.slice(5, dataURL.indexOf(';'));
+    return { diagramId: this.diagramId, revision, width: canvas.width, height: canvas.height, bounds: sceneBounds,
+      elementIds: elements.filter(e => !(e.type === 'text' && e.containerId)).map(e => e.id), mimeType, data: dataURL.split(',')[1] };
+  }
+
   execute(command: Command) {
     if (Date.now() > command.deadline) throw new CommandError('expired_request', 'The request expired before execution. Read the diagram before trying again.');
     validateArguments(command.tool, command.arguments);
-    if (command.tool === 'get_diagram') return this.snapshot();
+    if (command.tool === 'get_diagram') return { ...this.snapshot(), copies: [] as { sourceId: string; id: string }[] };
     const args = command.arguments as ApplyArguments;
     this.assertIdle();
     this.observe();
     if (args.diagramId !== this.diagramId) throw new CommandError('diagram_changed', 'This is a different browser diagram. Call get_diagram again.');
     if (args.expectedRevision !== this.revision) throw new CommandError('revision_conflict', `Expected revision ${args.expectedRevision}, current revision is ${this.revision}. Read the diagram and replan.`);
-    const elements = planOperations(this.api.getSceneElementsIncludingDeleted(), args.operations);
+    const { elements, copies } = planOperations(this.api.getSceneElementsIncludingDeleted(), args.operations);
+    if (Date.now() > command.deadline) throw new CommandError('expired_request', 'The batch expired before commit. Read the diagram before trying again.');
     // Commit exactly once. Do not mutate scene objects or maintain a second history.
     flushSync(() => this.api.updateScene({ elements, captureUpdate: CaptureUpdateAction.IMMEDIATELY }));
     this.observe();
-    return this.snapshot();
+    return { ...this.snapshot(), copies };
   }
 }
 

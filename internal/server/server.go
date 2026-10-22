@@ -50,7 +50,7 @@ func New(config Config) (*Server, error) {
 	}
 	s := &Server{config: config, db: db, mux: http.NewServeMux(), stop: make(chan struct{}), done: make(chan struct{})}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "diagrams", Version: "0.1.0"}, &mcp.ServerOptions{
-		Instructions: "Manage the connected browser's local diagram library. Call get_diagram before edits; pass its diagramId and revision. List before opening or managing diagrams. Edits autosave to browser IndexedDB, never the server. A batch is one undo step; switching diagrams clears undo. Import/export tools support chunked files in browser memory. Never blindly retry a timed-out write: inspect the diagram/library first. The browser must stay connected.",
+		Instructions: "Manage the connected browser's local diagram library. Call get_diagram before edits; pass its diagramId and revision. List before opening or managing diagrams. Edits autosave to browser IndexedDB, never the server. Use a fresh requestId for each edit batch; retry only with identical arguments and ID. Preview diagrams to inspect layout. fit_canvas changes the browser viewport. A batch is one undo step; switching diagrams clears undo. Import/export tools support chunked files in browser memory. Never blindly retry a timed-out write: inspect the diagram/library first. The browser must stay connected.",
 	})
 	var definitions map[string]struct {
 		Description string          `json:"description"`
@@ -63,7 +63,7 @@ func New(config Config) (*Server, error) {
 	for name, definition := range definitions {
 		mcpServer.AddTool(&mcp.Tool{
 			Name: name, Description: definition.Description, InputSchema: definition.InputSchema,
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "export_diagram" || name == "export_library" || name == "read_export", OpenWorldHint: &closedWorld},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "export_diagram" || name == "export_library" || name == "read_export" || name == "preview_diagram", OpenWorldHint: &closedWorld},
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.Params.Arguments
 			if len(args) == 0 {
@@ -77,11 +77,7 @@ func New(config Config) (*Server, error) {
 				data, _ := json.Marshal(publicError(err))
 				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil
 			}
-			var structured any
-			if err := json.Unmarshal(result, &structured); err != nil {
-				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Invalid browser response"}}}, nil
-			}
-			return &mcp.CallToolResult{StructuredContent: structured, Content: []mcp.Content{&mcp.TextContent{Text: string(result)}}}, nil
+			return browserToolResult(name, result), nil
 		})
 	}
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return mcpServer }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})

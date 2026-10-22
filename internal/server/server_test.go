@@ -128,14 +128,14 @@ func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
 	client := mcpClient(t, server, credentials.Access)
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 14 {
+	if err != nil || len(tools.Tools) != 16 {
 		t.Fatalf("tools: %v, %v", tools, err)
 	}
 	seenTools := make(map[string]bool)
 	for _, tool := range tools.Tools {
 		seenTools[tool.Name] = true
 	}
-	for _, name := range []string{"list_diagrams", "create_diagram", "open_diagram", "manage_diagram", "import_diagram", "export_diagram", "import_library", "export_library", "begin_import", "write_import_chunk", "read_export", "release_transfer"} {
+	for _, name := range []string{"list_diagrams", "create_diagram", "open_diagram", "manage_diagram", "import_diagram", "export_diagram", "import_library", "export_library", "begin_import", "write_import_chunk", "read_export", "release_transfer", "preview_diagram", "fit_canvas"} {
 		if !seenTools[name] {
 			t.Fatalf("missing tool: %s", name)
 		}

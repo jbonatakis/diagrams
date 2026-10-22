@@ -1,6 +1,6 @@
 {
   "get_diagram": {
-    "description": "Read the active browser diagram, its stable diagramId, persisted revision, name, saveStatus, and simplified elements. Call before editing. Diagrams autosave locally in IndexedDB; the browser must remain connected for tools.",
+    "description": "Read the active diagram ID, revision, name, save status, selection, viewport, and simplified elements including group IDs, original text, rendered labels, and line geometry. Coordinates are scene units and angles are radians. Call before editing; the browser must remain connected.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -8,7 +8,7 @@
     }
   },
   "apply_operations": {
-    "description": "Create shapes, connect them with bound straight arrows, or move shapes in the active diagram. Pass diagramId and expectedRevision from get_diagram. A batch is one native undo step and autosaves locally. Validation failures leave the scene unchanged. Complex connectors are unsupported by agent moves. After a timeout or disconnect, read before retrying; the edit may have completed.",
+    "description": "Atomically create, edit, organize, or delete canvas elements. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -36,6 +36,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
+                "description": "Create a basic shape. Angles are radians. Labels wrap; containers can grow to fit text.",
                 "required": [
                   "op",
                   "id",
@@ -71,55 +72,25 @@
                   "width": {
                     "type": "number",
                     "minimum": 20,
-                    "maximum": 10000,
-                    "default": 180
+                    "maximum": 10000
                   },
                   "height": {
                     "type": "number",
                     "minimum": 20,
-                    "maximum": 10000,
-                    "default": 100
+                    "maximum": 10000
+                  },
+                  "angle": {
+                    "type": "number",
+                    "minimum": -6.284,
+                    "maximum": 6.284
                   },
                   "label": {
                     "type": "string",
-                    "maxLength": 1000
+                    "maxLength": 10000
                   },
                   "fill": {
                     "type": "string",
                     "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
-                  },
-                  "stroke": {
-                    "type": "string",
-                    "pattern": "^#[0-9a-fA-F]{6}$"
-                  }
-                }
-              },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "op",
-                  "id",
-                  "fromId",
-                  "toId"
-                ],
-                "properties": {
-                  "op": {
-                    "const": "connect"
-                  },
-                  "id": {
-                    "type": "string",
-                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
-                  },
-                  "fromId": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100
-                  },
-                  "toId": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 100
                   },
                   "stroke": {
                     "type": "string",
@@ -137,18 +108,34 @@
                     "minimum": 1,
                     "maximum": 8
                   },
-                  "startArrowhead": {
+                  "fillStyle": {
                     "enum": [
-                      "none",
-                      "arrow",
-                      "triangle"
+                      "solid",
+                      "hachure",
+                      "cross-hatch",
+                      "zigzag"
                     ]
                   },
-                  "endArrowhead": {
+                  "opacity": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "roughness": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 3
+                  },
+                  "fontSize": {
+                    "type": "number",
+                    "minimum": 8,
+                    "maximum": 200
+                  },
+                  "textAlign": {
                     "enum": [
-                      "none",
-                      "arrow",
-                      "triangle"
+                      "left",
+                      "center",
+                      "right"
                     ]
                   }
                 }
@@ -156,6 +143,302 @@
               {
                 "type": "object",
                 "additionalProperties": false,
+                "description": "Create standalone text. Optional width enables wrapping.",
+                "required": [
+                  "op",
+                  "id",
+                  "x",
+                  "y",
+                  "text"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "create_text"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "x": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 10000
+                  },
+                  "width": {
+                    "type": "number",
+                    "minimum": 20,
+                    "maximum": 10000
+                  },
+                  "fill": {
+                    "type": "string",
+                    "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
+                  },
+                  "stroke": {
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "strokeStyle": {
+                    "enum": [
+                      "solid",
+                      "dashed",
+                      "dotted"
+                    ]
+                  },
+                  "strokeWidth": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "fillStyle": {
+                    "enum": [
+                      "solid",
+                      "hachure",
+                      "cross-hatch",
+                      "zigzag"
+                    ]
+                  },
+                  "opacity": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "roughness": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 3
+                  },
+                  "fontSize": {
+                    "type": "number",
+                    "minimum": 8,
+                    "maximum": 200
+                  },
+                  "textAlign": {
+                    "enum": [
+                      "left",
+                      "center",
+                      "right"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Create an unbound line or arrow (kind defaults to line). Arrowheads require kind arrow.",
+                "required": [
+                  "op",
+                  "id",
+                  "points"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "create_line"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "points": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "number",
+                        "minimum": -1000000,
+                        "maximum": 1000000
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "description": "Absolute scene coordinates. Replaces line geometry; arrow bindings are preserved unless explicitly changed."
+                  },
+                  "kind": {
+                    "enum": [
+                      "line",
+                      "arrow"
+                    ]
+                  },
+                  "startArrowhead": {
+                    "enum": [
+                      "none",
+                      "arrow",
+                      "triangle",
+                      "bar",
+                      "dot"
+                    ]
+                  },
+                  "endArrowhead": {
+                    "enum": [
+                      "none",
+                      "arrow",
+                      "triangle",
+                      "bar",
+                      "dot"
+                    ]
+                  },
+                  "fill": {
+                    "type": "string",
+                    "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
+                  },
+                  "stroke": {
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "strokeStyle": {
+                    "enum": [
+                      "solid",
+                      "dashed",
+                      "dotted"
+                    ]
+                  },
+                  "strokeWidth": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "fillStyle": {
+                    "enum": [
+                      "solid",
+                      "hachure",
+                      "cross-hatch",
+                      "zigzag"
+                    ]
+                  },
+                  "opacity": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "roughness": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 3
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Connect two basic shapes with a bound straight or elbow arrow, optionally with a label.",
+                "required": [
+                  "op",
+                  "id",
+                  "fromId",
+                  "toId"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "connect"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "fromId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "toId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "label": {
+                    "type": "string",
+                    "maxLength": 10000
+                  },
+                  "routing": {
+                    "enum": [
+                      "straight",
+                      "elbow"
+                    ]
+                  },
+                  "startArrowhead": {
+                    "enum": [
+                      "none",
+                      "arrow",
+                      "triangle",
+                      "bar",
+                      "dot"
+                    ]
+                  },
+                  "endArrowhead": {
+                    "enum": [
+                      "none",
+                      "arrow",
+                      "triangle",
+                      "bar",
+                      "dot"
+                    ]
+                  },
+                  "fill": {
+                    "type": "string",
+                    "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
+                  },
+                  "stroke": {
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "strokeStyle": {
+                    "enum": [
+                      "solid",
+                      "dashed",
+                      "dotted"
+                    ]
+                  },
+                  "strokeWidth": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "fillStyle": {
+                    "enum": [
+                      "solid",
+                      "hachure",
+                      "cross-hatch",
+                      "zigzag"
+                    ]
+                  },
+                  "opacity": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "roughness": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 3
+                  },
+                  "fontSize": {
+                    "type": "number",
+                    "minimum": 8,
+                    "maximum": 200
+                  },
+                  "textAlign": {
+                    "enum": [
+                      "left",
+                      "center",
+                      "right"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Move an element, its label, and attached connectors. Use translate for a group of elements.",
                 "required": [
                   "op",
                   "id",
@@ -169,7 +452,7 @@
                   "id": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 100
+                    "maxLength": 200
                   },
                   "x": {
                     "type": "number",
@@ -182,9 +465,410 @@
                     "maximum": 1000000
                   }
                 }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Edit geometry, text/label, and styling. Set text to empty to remove a label. Text height is measured automatically. Set fromId/toId to null to detach an arrow end. Elbow arrows cannot be rotated.",
+                "required": [
+                  "op",
+                  "id",
+                  "changes"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "update"
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "changes": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "x": {
+                        "type": "number",
+                        "minimum": -1000000,
+                        "maximum": 1000000
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": -1000000,
+                        "maximum": 1000000
+                      },
+                      "width": {
+                        "type": "number",
+                        "minimum": 1,
+                        "maximum": 10000
+                      },
+                      "height": {
+                        "type": "number",
+                        "minimum": 1,
+                        "maximum": 10000
+                      },
+                      "angle": {
+                        "type": "number",
+                        "minimum": -6.284,
+                        "maximum": 6.284
+                      },
+                      "text": {
+                        "type": "string",
+                        "maxLength": 10000
+                      },
+                      "points": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 100,
+                        "items": {
+                          "type": "array",
+                          "items": {
+                            "type": "number",
+                            "minimum": -1000000,
+                            "maximum": 1000000
+                          },
+                          "minItems": 2,
+                          "maxItems": 2
+                        },
+                        "description": "Absolute scene coordinates. Replaces line geometry; arrow bindings are preserved unless explicitly changed."
+                      },
+                      "fromId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "toId": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "routing": {
+                        "enum": [
+                          "straight",
+                          "elbow"
+                        ]
+                      },
+                      "startArrowhead": {
+                        "enum": [
+                          "none",
+                          "arrow",
+                          "triangle",
+                          "bar",
+                          "dot"
+                        ]
+                      },
+                      "endArrowhead": {
+                        "enum": [
+                          "none",
+                          "arrow",
+                          "triangle",
+                          "bar",
+                          "dot"
+                        ]
+                      },
+                      "fill": {
+                        "type": "string",
+                        "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
+                      },
+                      "stroke": {
+                        "type": "string",
+                        "pattern": "^#[0-9a-fA-F]{6}$"
+                      },
+                      "strokeStyle": {
+                        "enum": [
+                          "solid",
+                          "dashed",
+                          "dotted"
+                        ]
+                      },
+                      "strokeWidth": {
+                        "type": "number",
+                        "minimum": 1,
+                        "maximum": 8
+                      },
+                      "fillStyle": {
+                        "enum": [
+                          "solid",
+                          "hachure",
+                          "cross-hatch",
+                          "zigzag"
+                        ]
+                      },
+                      "opacity": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 100
+                      },
+                      "roughness": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 3
+                      },
+                      "fontSize": {
+                        "type": "number",
+                        "minimum": 8,
+                        "maximum": 200
+                      },
+                      "textAlign": {
+                        "enum": [
+                          "left",
+                          "center",
+                          "right"
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Delete selected elements, their labels, and incident arrows. One undo restores all of them.",
+                "required": [
+                  "op",
+                  "ids"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "delete"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Duplicate elements, labels, and arrows connecting selected shapes. Defaults to offset 40,40. New IDs use idPrefix-1, idPrefix-2, etc. Returns source-to-copy mappings. External bindings are detached; groups are copied with new IDs.",
+                "required": [
+                  "op",
+                  "ids",
+                  "idPrefix"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "duplicate"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  },
+                  "idPrefix": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,40}$"
+                  },
+                  "dx": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  },
+                  "dy": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Group elements and labels using a fresh groupId. Include all members of existing groups to nest them.",
+                "required": [
+                  "op",
+                  "ids",
+                  "groupId"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "group"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  },
+                  "groupId": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Remove specified group memberships, preserving any other nested groups.",
+                "required": [
+                  "op",
+                  "groupIds"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "ungroup"
+                  },
+                  "groupIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Move multiple elements by the same offset. Labels move with containers; attached arrows update once.",
+                "required": [
+                  "op",
+                  "ids",
+                  "dx",
+                  "dy"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "translate"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  },
+                  "dx": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  },
+                  "dy": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Align individual elements by their rotated bounding boxes. Labels move with their containers.",
+                "required": [
+                  "op",
+                  "ids",
+                  "alignment"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "align"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 2,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  },
+                  "alignment": {
+                    "enum": [
+                      "left",
+                      "center",
+                      "right",
+                      "top",
+                      "middle",
+                      "bottom"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Evenly space individual elements with equal gaps while preserving the two outer edges. Fails if the available span cannot fit them.",
+                "required": [
+                  "op",
+                  "ids",
+                  "axis"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "distribute"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 3,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  },
+                  "axis": {
+                    "enum": [
+                      "horizontal",
+                      "vertical"
+                    ]
+                  }
+                }
               }
             ]
           }
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Use a fresh UUID per batch. Retry with identical arguments and the same ID. The last 128 successful IDs per diagram are saved atomically with the scene and survive reloads. Replays return current state plus appliedRevision without repeating edits, even after undo. Reusing an ID with different arguments fails."
         }
       }
     }
@@ -523,6 +1207,88 @@
         "transferId"
       ],
       "additionalProperties": false
+    }
+  },
+  "preview_diagram": {
+    "description": "Render the active diagram, specified elements, or current selection as an MCP image for visual inspection. Includes labels, metadata, bounds, and the captured revision. Does not change the diagram or viewport. Images are rendered in the browser, bounded in size, and never stored on the server.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "diagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "elementIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true
+        },
+        "selectionOnly": {
+          "type": "boolean",
+          "description": "Use the current human selection instead of the whole diagram. Mutually exclusive with elementIds."
+        },
+        "maxSize": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 1600,
+          "default": 1200
+        }
+      },
+      "required": [
+        "diagramId"
+      ],
+      "not": {
+        "required": [
+          "elementIds",
+          "selectionOnly"
+        ]
+      }
+    }
+  },
+  "fit_canvas": {
+    "description": "Fit the canvas to all elements, specified elementIds, or the current selection. Changes only the viewport; does not create an undo step or change diagram revision. Refuses while the user is editing.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "diagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "elementIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "minItems": 1,
+          "maxItems": 100,
+          "uniqueItems": true
+        },
+        "selectionOnly": {
+          "type": "boolean",
+          "description": "Use the current human selection instead of the whole diagram. Mutually exclusive with elementIds."
+        }
+      },
+      "required": [
+        "diagramId"
+      ],
+      "not": {
+        "required": [
+          "elementIds",
+          "selectionOnly"
+        ]
+      }
     }
   }
 }
