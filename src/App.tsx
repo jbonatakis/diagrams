@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { Excalidraw, MainMenu, WelcomeScreen } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { BrowserBridge, type Activity, type ConnectionStatus } from './bridge';
-import { DiagramController, type DiagramSnapshot } from './editor/controller';
+import { openWorkspace, type Workspace } from './library/workspace';
+import { LibraryPanel, FileActions, importFile } from './library/ui';
+import type { DiagramMeta } from './library/scene';
 
 const initialData = {
   appState: {
@@ -21,9 +23,36 @@ function Mark() {
 }
 
 export function App() {
+  const [workspace, setWorkspace] = useState<Workspace>();
+  const [error, setError] = useState('');
+  function load() { setError(''); void openWorkspace().then(setWorkspace).catch((failure: Error) => setError(failure.message)); }
+  useEffect(load, []);
+  if (!workspace) return <main className="loading-screen"><Mark /><h1>{error ? 'Could not open your library' : 'Opening your diagrams…'}</h1>{error && <><p role="alert">{error}</p><button className="secondary-button" onClick={load}>Retry</button></>}</main>;
+  return <WorkspaceView workspace={workspace} />;
+}
+
+function WorkspaceView({ workspace }: { workspace: Workspace }) {
+  const state = useSyncExternalStore(workspace.subscribe, workspace.getSnapshot);
+  const { snapshot } = state;
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [uiError, setUIError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [working, setWorking] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const ready = !!workspace.controller;
+  const disabled = state.busy || working || !ready;
+  async function act(action: () => Promise<unknown>) {
+    setUIError(''); setNotice(''); setWorking(true);
+    try { await action(); } catch (failure) { setUIError(failure instanceof Error ? failure.message : 'The action could not be completed.'); }
+    finally { setWorking(false); }
+  }
+  async function open(id: string) {
+    await workspace.run('open_diagram', { diagramId: id, expectedActiveDiagramId: workspace.active.id, expectedActiveRevision: workspace.controller!.revision });
+  }
+  function manage(item: DiagramMeta, action: string, name?: string) {
+    return workspace.run('manage_diagram', { diagramId: item.id, expectedRevision: item.id === workspace.active.id ? workspace.controller!.revision : item.revision, action, ...(name === undefined ? {} : { name }) });
+  }
   const [api, setAPI] = useState<ExcalidrawImperativeAPI | null>(null);
-  const [controller, setController] = useState<DiagramController | null>(null);
-  const [snapshot, setSnapshot] = useState<DiagramSnapshot | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const [token, setToken] = useState('');
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
@@ -37,25 +66,28 @@ export function App() {
 
   useEffect(() => {
     if (!api) return;
-    const next = new DiagramController(api, () => setSnapshot(next.snapshot()));
-    setController(next);
-    setSnapshot(next.snapshot());
-    return () => { bridge.current?.disconnect(); next.dispose(); };
-  }, [api]);
+    let detach: (() => void) | undefined;
+    const timer = setTimeout(() => { detach = workspace.attach(api); }, 0);
+    return () => { clearTimeout(timer); detach?.(); };
+  }, [api, workspace]);
+
+  useEffect(() => () => bridge.current?.disconnect(), []);
 
   useEffect(() => {
-    const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (api?.getSceneElements().length) event.preventDefault();
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (workspace.hasUnsavedChanges) event.preventDefault();
     };
-    window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [api]);
+    const flush = () => { if (document.visibilityState === 'hidden') void workspace.flush().catch(() => {}); };
+    window.addEventListener('beforeunload', beforeUnload);
+    document.addEventListener('visibilitychange', flush);
+    return () => { window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('visibilitychange', flush); };
+  }, [workspace]);
 
   function connect(event: FormEvent) {
     event.preventDefault();
-    if (!controller || !token.trim()) return;
+    if (!ready || !token.trim()) return;
     bridge.current?.disconnect();
-    const next = new BrowserBridge(controller, token.trim(), (nextStatus, error) => {
+    const next = new BrowserBridge(workspace, token.trim(), (nextStatus, error) => {
       setStatus(nextStatus); setConnectionError(error ?? '');
     }, (activity) => setActivities((previous) => [activity, ...previous].slice(0, 12)));
     bridge.current = next;
@@ -75,17 +107,35 @@ export function App() {
     <header className="app-header">
       <a className="brand" href="/" aria-label="Diagrams home" onClick={(event) => event.preventDefault()}><span className="brand-mark"><Mark /></span>Diagrams<span className="phase-label">LAB</span></a>
       <span className="header-divider" />
-      <span className="document-title">Untitled diagram</span>
-      <span className="memory-badge">Temporary canvas</span>
+      <button className="library-toggle" aria-label="Diagram library" aria-expanded={libraryOpen} onClick={() => setLibraryOpen(!libraryOpen)}>▤ <span>Library</span></button>
+      <input key={state.active.id + state.active.name} className="document-title" aria-label="Diagram name" maxLength={120} defaultValue={state.active.name} disabled={disabled}
+        onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') { event.currentTarget.value = state.active.name; event.currentTarget.blur(); } }}
+        onBlur={(event) => { const name = event.currentTarget.value.trim(); if (name !== state.active.name) { event.currentTarget.value = state.active.name; void act(() => manage(state.active, 'rename', name)); } }} />
+      <span className={`save-badge ${state.saveStatus}`} data-testid="save-status" role="status">{({ saved: 'Saved in browser', unsaved: 'Unsaved changes', saving: 'Saving…', error: 'Save failed' })[state.saveStatus]}</span>
+      <FileActions disabled={disabled} workspace={workspace} act={act} onImport={() => fileInput.current?.click()} />
       <button className={`connection-toggle ${connected ? 'is-connected' : ''}`} onClick={() => setPanelOpen(!panelOpen)} aria-expanded={panelOpen} aria-controls="agent-panel">
-        <span className={`status-dot ${connected ? 'online' : ''}`} />{connected ? 'Agent connected' : 'Connect agent'}
+        <span className={`status-dot ${connected ? 'online' : ''}`} />{connected ? 'Canvas connected' : 'Connect agent'}
         <span aria-hidden="true">↗</span>
       </button>
     </header>
 
+    <input ref={fileInput} type="file" accept=".excalidraw,.json,application/json" aria-label="Import file" className="hidden-file" onChange={(event) => {
+      const file = event.target.files?.[0]; event.target.value = '';
+      if (file) void act(async () => {
+        const result = await importFile(workspace, file);
+        if (result.id) { await open(result.id); setNotice('Diagram imported.'); }
+        else setNotice(`Imported ${result.count} diagrams. Open the library to choose one.`);
+      });
+    }} />
+    {(uiError || state.error) && <div className="workspace-error" role="alert"><span>{uiError || state.error}</span>{state.saveStatus === 'error' && <button onClick={() => void act(() => workspace.retrySave())}>Retry saving</button>}<button aria-label="Dismiss error" onClick={() => { setUIError(''); workspace.dismissError(); }}>×</button></div>}
+    {notice && <div className="workspace-notice" role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice('')}>×</button></div>}
     <main className="workspace">
-      <section className="canvas-area" aria-label="Diagram canvas" data-testid="editor">
-        <Excalidraw excalidrawAPI={setAPI} initialData={initialData} theme="light" name="Untitled diagram" aiEnabled={false}
+      {libraryOpen && <LibraryPanel state={state} disabled={disabled} onClose={() => setLibraryOpen(false)} onOpen={(id) => void act(() => open(id))}
+        onCreate={() => void act(async () => { const created = await workspace.run('create_diagram') as DiagramMeta; await open(created.id); })}
+        onManage={(item, action) => void act(() => manage(item, action))} />}
+
+      <section className="canvas-area" aria-label="Diagram canvas" data-testid="editor" inert={disabled}>
+        <Excalidraw key={state.editorEpoch} excalidrawAPI={setAPI} initialData={initialData} theme="light" name={state.active.name} aiEnabled={false}
           UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false, toggleTheme: false, export: { saveFileToDisk: true } } }}>
           <MainMenu>
             <MainMenu.DefaultItems.Export />
@@ -105,18 +155,19 @@ export function App() {
             </WelcomeScreen.Center>
           </WelcomeScreen>
         </Excalidraw>
+        {(state.busy || working || !ready) && <div className="canvas-busy" aria-label="Updating library" />}
       </section>
 
       {panelOpen && <aside className="agent-panel" id="agent-panel" aria-label="Agent connection">
         <div className="panel-heading"><div><p className="eyebrow">WORK TOGETHER</p><h2>Your agent, on canvas.</h2></div><button className="icon-button" aria-label="Close agent panel" onClick={() => setPanelOpen(false)}>×</button></div>
-        <p className="panel-intro">Give Codex a direct connection to this diagram. You can keep drawing while it works.</p>
+        <p className="panel-intro">Give Codex a direct connection to your diagrams. You can keep drawing while it works.</p>
         <div className={`connection-card ${connected ? 'connected' : ''}`}>
           <div className="connection-heading"><span className={`status-dot ${connected ? 'online' : connecting ? 'pending' : ''}`} /><strong data-testid="connection-status">{connected ? 'Connected' : connecting ? 'Connecting…' : 'Not connected'}</strong></div>
-          <p>{connected ? 'This canvas is ready for agent tools.' : 'Connect this browser with your server token.'}</p>
+          <p>{connected ? 'Your library is ready for agent tools.' : 'Connect this browser with your server token.'}</p>
           {!connected && !connecting ? <form onSubmit={connect}>
             <label htmlFor="connection-token">Connection token</label>
             <input id="connection-token" type="password" autoComplete="off" spellCheck={false} placeholder="Paste your token" value={token} onChange={(event) => setToken(event.target.value)} />
-            <button className="primary-button" disabled={!controller || !token.trim()} type="submit">Connect this canvas <span aria-hidden="true">→</span></button>
+            <button className="primary-button" disabled={!ready || !token.trim()} type="submit">Connect this canvas <span aria-hidden="true">→</span></button>
           </form> : <button className="secondary-button" onClick={() => bridge.current?.disconnect()}>{connecting ? 'Cancel connection' : 'Disconnect'}</button>}
           {connectionError && <p className="error-message" role="alert">{connectionError}</p>}
         </div>
@@ -128,7 +179,7 @@ export function App() {
         <div className="activity-section"><div className="section-label"><h3>Activity</h3><span className="small-label">THIS SESSION</span></div>
           {activities.length === 0 ? <div className="empty-activity"><span aria-hidden="true">↔</span><p>Agent activity will appear here.</p></div> : <ol className="activity-list" aria-live="polite">{activities.map((activity) => <li key={activity.id} className={activity.error ? 'failed' : ''}><span className="activity-dot" /><div><p>{activity.label}</p><time>{activity.time}</time></div></li>)}</ol>}
         </div>
-        <div className="prototype-note"><span className="note-icon" aria-hidden="true">i</span><p>This is a temporary canvas. Reloading clears the diagram. Use the canvas menu to export a copy.</p></div>
+        <div className="prototype-note"><span className="note-icon" aria-hidden="true">i</span><p>Diagrams are saved in this browser. Export a library backup to keep a copy elsewhere. Your agent can manage diagrams and import or export files while connected.</p></div>
       </aside>}
     </main>
 

@@ -119,8 +119,17 @@ func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
 	client := mcpClient(t, server)
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 2 {
+	if err != nil || len(tools.Tools) != 14 {
 		t.Fatalf("tools: %v, %v", tools, err)
+	}
+	seenTools := make(map[string]bool)
+	for _, tool := range tools.Tools {
+		seenTools[tool.Name] = true
+	}
+	for _, name := range []string{"list_diagrams", "create_diagram", "open_diagram", "manage_diagram", "import_diagram", "export_diagram", "import_library", "export_library", "begin_import", "write_import_chunk", "read_export", "release_transfer"} {
+		if !seenTools[name] {
+			t.Fatalf("missing tool: %s", name)
+		}
 	}
 	result, err := client.CallTool(ctx, &mcp.CallToolParams{Name: "get_diagram", Arguments: map[string]any{}})
 	if err != nil || !result.IsError || !strings.Contains(result.Content[0].(*mcp.TextContent).Text, "browser_unavailable") {

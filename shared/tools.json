@@ -1,66 +1,528 @@
 {
   "get_diagram": {
-    "description": "Read the connected browser's live diagram, including its diagramId, revision, shapes, labels, positions, styles, and arrow bindings. Read before editing. There is one connected browser in this phase 1 prototype. The diagram is held in browser memory and resets on reload.",
-    "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+    "description": "Read the active browser diagram, its stable diagramId, persisted revision, name, saveStatus, and simplified elements. Call before editing. Diagrams autosave locally in IndexedDB; the browser must remain connected for tools.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
   },
   "apply_operations": {
-    "description": "Create shapes, connect them with straight bound arrows, or move shapes in the connected browser. Read get_diagram first and pass its diagramId and revision. A batch is one undo step. Coordinates are canvas coordinates. Moves support rectangles, ellipses, diamonds, and standalone text; bound straight arrows and shape labels follow. Complex or elbow connectors are not supported by agent moves in phase 1. Errors leave the diagram unchanged. Do not blindly retry after a timeout; inspect the diagram first.",
+    "description": "Create shapes, connect them with bound straight arrows, or move shapes in the active diagram. Pass diagramId and expectedRevision from get_diagram. A batch is one native undo step and autosaves locally. Validation failures leave the scene unchanged. Complex connectors are unsupported by agent moves. After a timeout or disconnect, read before retrying; the edit may have completed.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["diagramId", "expectedRevision", "operations"],
+      "required": [
+        "diagramId",
+        "expectedRevision",
+        "operations"
+      ],
       "properties": {
-        "diagramId": { "type": "string", "minLength": 1, "maxLength": 100 },
-        "expectedRevision": { "type": "integer", "minimum": 0 },
+        "diagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
         "operations": {
-          "type": "array", "minItems": 1, "maxItems": 50,
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
           "items": {
             "oneOf": [
               {
-                "type": "object", "additionalProperties": false,
-                "required": ["op", "id", "shape", "x", "y"],
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "op",
+                  "id",
+                  "shape",
+                  "x",
+                  "y"
+                ],
                 "properties": {
-                  "op": { "const": "create_shape" },
-                  "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,80}$" },
-                  "shape": { "enum": ["rectangle", "ellipse", "diamond"] },
-                  "x": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
-                  "y": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
-                  "width": { "type": "number", "minimum": 20, "maximum": 10000, "default": 180 },
-                  "height": { "type": "number", "minimum": 20, "maximum": 10000, "default": 100 },
-                  "label": { "type": "string", "maxLength": 1000 },
-                  "fill": { "type": "string", "pattern": "^(transparent|#[0-9a-fA-F]{6})$" },
-                  "stroke": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+                  "op": {
+                    "const": "create_shape"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "shape": {
+                    "enum": [
+                      "rectangle",
+                      "ellipse",
+                      "diamond"
+                    ]
+                  },
+                  "x": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  },
+                  "width": {
+                    "type": "number",
+                    "minimum": 20,
+                    "maximum": 10000,
+                    "default": 180
+                  },
+                  "height": {
+                    "type": "number",
+                    "minimum": 20,
+                    "maximum": 10000,
+                    "default": 100
+                  },
+                  "label": {
+                    "type": "string",
+                    "maxLength": 1000
+                  },
+                  "fill": {
+                    "type": "string",
+                    "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
+                  },
+                  "stroke": {
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  }
                 }
               },
               {
-                "type": "object", "additionalProperties": false,
-                "required": ["op", "id", "fromId", "toId"],
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "op",
+                  "id",
+                  "fromId",
+                  "toId"
+                ],
                 "properties": {
-                  "op": { "const": "connect" },
-                  "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,80}$" },
-                  "fromId": { "type": "string", "minLength": 1, "maxLength": 100 },
-                  "toId": { "type": "string", "minLength": 1, "maxLength": 100 },
-                  "stroke": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
-                  "strokeStyle": { "enum": ["solid", "dashed", "dotted"] },
-                  "strokeWidth": { "type": "number", "minimum": 1, "maximum": 8 },
-                  "startArrowhead": { "enum": ["none", "arrow", "triangle"] },
-                  "endArrowhead": { "enum": ["none", "arrow", "triangle"] }
+                  "op": {
+                    "const": "connect"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "fromId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "toId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "stroke": {
+                    "type": "string",
+                    "pattern": "^#[0-9a-fA-F]{6}$"
+                  },
+                  "strokeStyle": {
+                    "enum": [
+                      "solid",
+                      "dashed",
+                      "dotted"
+                    ]
+                  },
+                  "strokeWidth": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "startArrowhead": {
+                    "enum": [
+                      "none",
+                      "arrow",
+                      "triangle"
+                    ]
+                  },
+                  "endArrowhead": {
+                    "enum": [
+                      "none",
+                      "arrow",
+                      "triangle"
+                    ]
+                  }
                 }
               },
               {
-                "type": "object", "additionalProperties": false,
-                "required": ["op", "id", "x", "y"],
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "op",
+                  "id",
+                  "x",
+                  "y"
+                ],
                 "properties": {
-                  "op": { "const": "move" },
-                  "id": { "type": "string", "minLength": 1, "maxLength": 100 },
-                  "x": { "type": "number", "minimum": -1000000, "maximum": 1000000 },
-                  "y": { "type": "number", "minimum": -1000000, "maximum": 1000000 }
+                  "op": {
+                    "const": "move"
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "x": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  }
                 }
               }
             ]
           }
         }
       }
+    }
+  },
+  "list_diagrams": {
+    "description": "List the browser library and active diagram ID/revision. Include trash to find deleted diagrams for restoration.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includeTrash": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    }
+  },
+  "create_diagram": {
+    "description": "Create and save an empty diagram. Returns its stable ID and revision. Does not change the active canvas; use open_diagram explicitly.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      },
+      "required": []
+    }
+  },
+  "open_diagram": {
+    "description": "Open a saved diagram in the browser after saving current edits. Read list_diagrams first and pass its active ID/revision to avoid switching away from a newer human edit. Switching resets the editor undo history.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "diagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "expectedActiveDiagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "expectedActiveRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "diagramId",
+        "expectedActiveDiagramId",
+        "expectedActiveRevision"
+      ]
+    }
+  },
+  "manage_diagram": {
+    "description": "Rename, duplicate, move to trash, restore from trash, or recover the previous saved version. Requires the target revision from list_diagrams/get_diagram. Trash is recoverable. Duplicate creates a new ID without opening it. Recover replaces contents and clears undo if active.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "rename",
+            "duplicate",
+            "trash",
+            "restore",
+            "recover"
+          ]
+        },
+        "diagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      },
+      "required": [
+        "action",
+        "diagramId",
+        "expectedRevision"
+      ],
+      "if": {
+        "properties": {
+          "action": {
+            "const": "rename"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "name"
+        ]
+      }
+    }
+  },
+  "export_diagram": {
+    "description": "Export a saved or active diagram as editable excalidraw JSON, SVG, or PNG. Returns filename, mimeType, encoding (utf8/base64), sizeBytes, revision, artifactId, first data chunk and nextOffset. Read remaining chunks using read_export, concatenate data, then decode base64 for PNG. Artifacts expire after 5 minutes and stay only in browser memory. Export also works for an unsaved active canvas.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "diagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "format": {
+          "enum": [
+            "excalidraw",
+            "svg",
+            "png"
+          ]
+        }
+      },
+      "required": [
+        "diagramId"
+      ]
+    }
+  },
+  "export_library": {
+    "description": "Back up the browser diagram library as versioned JSON, including trash by default. Returns a UTF-8 export artifact and first chunk; use read_export until nextOffset is null. Maximum backup is 100 diagrams / 64 MB. Diagrams are never saved on the server.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "includeTrash": {
+          "type": "boolean"
+        }
+      },
+      "required": []
+    }
+  },
+  "read_export": {
+    "description": "Read an export artifact chunk by artifactId and nextOffset. Concatenate chunks in order. Offsets are UTF-16 string offsets returned by the tool, not byte positions. Artifacts expire 5 minutes after creation.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 16000
+        }
+      },
+      "required": [
+        "artifactId"
+      ]
+    }
+  },
+  "begin_import": {
+    "description": "Begin a chunked editable diagram or library JSON upload, held in browser memory for 5 minutes. Returns uploadId and chunkSize. Append using write_import_chunk, then call import_diagram or import_library with uploadId. Use this for data larger than 256 KB. Call release_transfer to cancel an unfinished upload.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "diagram",
+            "library"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    }
+  },
+  "write_import_chunk": {
+    "description": "Append UTF-8 JSON text to an upload. Supply the exact nextOffset from the last response (0 initially). Chunks must be at most 64000 UTF-8 bytes and keep Unicode characters intact. Uploading alone does not modify saved diagrams.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64000
+        }
+      },
+      "required": [
+        "uploadId",
+        "offset",
+        "data"
+      ]
+    }
+  },
+  "import_diagram": {
+    "description": "Import editable .excalidraw JSON (16 MB maximum). Provide data directly for small files or an uploadId from begin_import/write_import_chunk. Default creates a new diagram and leaves the canvas active. Explicit replacement requires replaceDiagramId and expectedRevision; the previous saved contents remain recoverable. Files are fully validated before writing. Returns diagram metadata; use open_diagram to view a new import.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 262144
+        },
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "replaceDiagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [],
+      "oneOf": [
+        {
+          "required": [
+            "data"
+          ],
+          "not": {
+            "required": [
+              "uploadId"
+            ]
+          }
+        },
+        {
+          "required": [
+            "uploadId"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ],
+      "dependencies": {
+        "replaceDiagramId": [
+          "expectedRevision"
+        ],
+        "expectedRevision": [
+          "replaceDiagramId"
+        ]
+      }
+    }
+  },
+  "import_library": {
+    "description": "Restore a version 1 diagrams-library JSON backup (up to 100 diagrams / 64 MB). Provide data or uploadId. Imports all entries atomically with new diagram IDs, preserving names, scenes, images and trash state. Existing diagrams are never overwritten. Returns source-to-new ID mappings. Does not change the active canvas.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 262144
+        },
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "required": [],
+      "oneOf": [
+        {
+          "required": [
+            "data"
+          ],
+          "not": {
+            "required": [
+              "uploadId"
+            ]
+          }
+        },
+        {
+          "required": [
+            "uploadId"
+          ],
+          "not": {
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "release_transfer": {
+    "description": "Release an export artifact or cancel an unfinished import to free browser memory. Safe to repeat. Use after saving an export locally.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "transferId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "transferId"
+      ],
+      "additionalProperties": false
     }
   }
 }

@@ -34,7 +34,7 @@ func New(config Config) *Server {
 	}
 	s := &Server{config: config, tokenHash: sha256.Sum256([]byte(config.Token)), mux: http.NewServeMux()}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "diagrams", Version: "0.1.0"}, &mcp.ServerOptions{
-		Instructions: "Edit the one connected browser diagram. Call get_diagram before apply_operations; use the returned diagramId and revision. Use stable element IDs. A batch is one undo step. Never blindly retry a timed-out write: read the diagram first. Phase 1 stores diagrams only in browser memory; reload clears them. The browser must remain connected.",
+		Instructions: "Manage the connected browser's local diagram library. Call get_diagram before edits; pass its diagramId and revision. List before opening or managing diagrams. Edits autosave to browser IndexedDB, never the server. A batch is one undo step; switching diagrams clears undo. Import/export tools support chunked files in browser memory. Never blindly retry a timed-out write: inspect the diagram/library first. The browser must stay connected.",
 	})
 	var definitions map[string]struct {
 		Description string          `json:"description"`
@@ -47,7 +47,7 @@ func New(config Config) *Server {
 	for name, definition := range definitions {
 		mcpServer.AddTool(&mcp.Tool{
 			Name: name, Description: definition.Description, InputSchema: definition.InputSchema,
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram", OpenWorldHint: &closedWorld},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "export_diagram" || name == "export_library" || name == "read_export", OpenWorldHint: &closedWorld},
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.Params.Arguments
 			if len(args) == 0 {
@@ -129,7 +129,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			http.Error(w, "a valid bearer token is required", http.StatusUnauthorized)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
+		r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 		next.ServeHTTP(w, r)
 	})
 }

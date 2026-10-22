@@ -28,7 +28,8 @@ async function connect(page: Page) {
 async function read(): Promise<DiagramSnapshot> {
   const result = await client.callTool({ name: 'get_diagram', arguments: {} });
   expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
-  return result.structuredContent as DiagramSnapshot;
+  const { saveStatus: _save, ...snapshot } = result.structuredContent as DiagramSnapshot & { saveStatus: string };
+  return snapshot;
 }
 
 async function apply(state: DiagramSnapshot, operations: Operation[]) {
@@ -51,7 +52,7 @@ async function drag(page: Page, from: [number, number], to: [number, number]) {
   await page.mouse.up();
 }
 
-test('agent creates a diagram, human moves a shape, agent reads and moves it, undo preserves the human edit', async ({ page, context }, testInfo) => {
+test('agent creates a diagram, human moves a shape, agent reads and moves it, undo preserves the human edit', async ({ page, browser }, testInfo) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await connect(page);
@@ -92,7 +93,8 @@ test('agent creates a diagram, human moves a shape, agent reads and moves it, un
   // move + undo, rather than masking connector regressions with a loose tolerance.
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError).toBe(true);
-  const control = await context.newPage();
+  const controlContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, baseURL: 'http://127.0.0.1:4180' });
+  const control = await controlContext.newPage();
   control.on('pageerror', (error) => pageErrors.push(error.message));
   try {
     await connect(control);
@@ -128,7 +130,7 @@ test('agent creates a diagram, human moves a shape, agent reads and moves it, un
       expect(undoneArrow.points![index][axis]).toBeCloseTo(coordinate, 8);
     }));
   } finally {
-    await control.close();
+    await controlContext.close();
   }
   expect(pageErrors).toEqual([]);
 });
@@ -166,20 +168,21 @@ test('stale revisions and invalid batches leave the live diagram unchanged', asy
   expect(await read()).toEqual(current);
 });
 
-test('only an authenticated browser can connect and only one owns the diagram', async ({ page, context }) => {
+test('only an authenticated browser can connect and only one owns the diagram', async ({ page, browser }) => {
   await page.goto('/');
   await page.getByLabel('Connection token', { exact: true }).fill('wrong-token');
   await page.getByRole('button', { name: 'Connect this canvas' }).click();
   await expect(page.getByRole('alert')).toContainText('Invalid connection token');
   await connect(page);
   const first = await read();
-  const second = await context.newPage();
+  const secondContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4180' });
+  const second = await secondContext.newPage();
   await second.goto('/');
   await second.getByLabel('Connection token', { exact: true }).fill(token);
   await second.getByRole('button', { name: 'Connect this canvas' }).click();
   await expect(second.getByRole('alert')).toContainText('Another browser is connected');
   expect((await read()).diagramId).toBe(first.diagramId);
-  await second.close();
+  await secondContext.close();
   await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
   await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError).toBe(true);
 });

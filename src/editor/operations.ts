@@ -1,4 +1,4 @@
-import { convertToExcalidrawElements, newElementWith } from '@excalidraw/excalidraw';
+import { convertToExcalidrawElements, newElementWith, restoreElements } from '@excalidraw/excalidraw';
 import type { ExcalidrawElement, ExcalidrawArrowElement } from '@excalidraw/excalidraw/element/types';
 import { CommandError, type Operation, type ConnectOperation } from '../protocol';
 
@@ -61,7 +61,13 @@ function makeArrow(elements: ExcalidrawElement[], operation: ConnectOperation): 
   ] as Skeleton[], { regenerateIds: false });
   const arrow = converted.find((item) => item.id === operation.id);
   if (arrow?.type !== 'arrow') throw new CommandError('binding_failed', 'Could not construct the connector.');
-  return { ...arrow, type: 'arrow', elbowed: false };
+  // Binding can shift the first point away from [0, 0] without updating the
+  // origin or dimensions. Apply the native restore normalization now so a
+  // later save/load reports identical geometry. Keep bindings to shapes that
+  // are outside this one-element array (repairBindings must remain disabled).
+  const [normalized] = restoreElements([{ ...arrow, elbowed: false }], null, { repairBindings: false });
+  if (normalized?.type !== 'arrow') throw new CommandError('binding_failed', 'Could not normalize the connector.');
+  return { ...normalized, type: 'arrow', elbowed: false };
 }
 
 function move(elements: ExcalidrawElement[], id: string, x: number, y: number): ExcalidrawElement[] {

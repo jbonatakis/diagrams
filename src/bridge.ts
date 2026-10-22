@@ -1,5 +1,4 @@
 import { CommandError, type Command, type CommandResult } from './protocol';
-import type { DiagramController } from './editor/controller';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export type Activity = { id: string; label: string; time: string; error: boolean };
@@ -11,7 +10,7 @@ export class BrowserBridge {
   private attempts = 0;
 
   constructor(
-    private controller: DiagramController,
+    private controller: { readonly diagramId: string; execute: (command: Command) => unknown | Promise<unknown> },
     private token: string,
     private onStatus: (status: ConnectionStatus, error?: string) => void,
     private onActivity: (activity: Activity) => void,
@@ -27,7 +26,7 @@ export class BrowserBridge {
     socket.onopen = () => {
       socket.send(JSON.stringify({ type: 'hello', token: this.token, diagramId: this.controller.diagramId }));
     };
-    socket.onmessage = (event) => {
+    socket.onmessage = async (event) => {
       if (this.stopped || this.socket !== socket) return;
       let message: { type: string };
       try { message = JSON.parse(event.data); } catch { return; }
@@ -38,16 +37,22 @@ export class BrowserBridge {
         const command = message as Command;
         const response: CommandResult = { type: 'result', id: command.id };
         try {
-          response.result = this.controller.execute(command);
+          response.result = await this.controller.execute(command);
         } catch (error) {
           response.error = error instanceof CommandError
             ? { code: error.code, message: error.message }
             : { code: 'editor_error', message: 'The editor could not complete this operation.' };
         }
-        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(response));
+        let payload = JSON.stringify(response);
+        if (new TextEncoder().encode(payload).byteLength > 3 * 1024 * 1024) {
+          response.result = undefined;
+          response.error = { code: 'response_too_large', message: 'This response is too large. Use export_diagram and read_export to retrieve the scene in chunks; inspect the library before retrying a write.' };
+          payload = JSON.stringify(response);
+        }
+        if (socket.readyState === WebSocket.OPEN) socket.send(payload);
         this.onActivity({
           id: command.id,
-          label: response.error?.message ?? (command.tool === 'get_diagram' ? 'Agent read the diagram' : 'Agent updated the diagram'),
+          label: response.error?.message ?? `Agent: ${command.tool.replaceAll('_', ' ')}`,
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           error: Boolean(response.error),
         });
