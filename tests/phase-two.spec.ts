@@ -11,6 +11,7 @@ test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => errors.push(error.message));
 });
 test.afterEach(async ({ page }) => {
+  await page.keyboard.press('Escape');
   const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true });
   if (await disconnect.isVisible().catch(() => false)) await disconnect.click();
   await client?.close();
@@ -146,7 +147,7 @@ test('library creation, duplication, switching, trash and restore work in UI and
   const copy = await call('manage_diagram', { diagramId: first.diagramId, expectedRevision: first.revision, action: 'duplicate', name: 'Copy' });
   expect(copy.id).not.toBe(first.diagramId);
   expect((await call('get_diagram')).diagramId).toBe(first.diagramId);
-  await page.getByRole('button', { name: 'Diagram library', exact: true }).click();
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
   await page.getByRole('button', { name: 'New diagram' }).click();
   await expect.poll(async () => (await call('get_diagram')).diagramId).not.toBe(first.diagramId);
   const second = await call('get_diagram');
@@ -155,7 +156,7 @@ test('library creation, duplication, switching, trash and restore work in UI and
   await expect.poll(async () => (await call('get_diagram')).name).toBe('Another diagram');
   await open(copy.id);
   expect((await call('get_diagram')).elements).toEqual(first.elements);
-  await page.getByRole('button', { name: 'Close library', exact: true }).click();
+  await page.getByRole('button', { name: 'Close diagrams', exact: true }).click();
   await page.getByTestId('editor').click({ position: { x: 900, y: 600 } });
   await page.keyboard.press('ControlOrMeta+z');
   expect((await call('get_diagram')).elements).toEqual(first.elements);
@@ -164,11 +165,11 @@ test('library creation, duplication, switching, trash and restore work in UI and
   await call('manage_diagram', { diagramId: copy.id, expectedRevision: current.revision, action: 'trash' });
   expect((await call('get_diagram')).diagramId).not.toBe(copy.id);
   expect((await call('list_diagrams')).diagrams.map((d: any) => d.id)).not.toContain(copy.id);
-  await page.getByRole('button', { name: 'Diagram library', exact: true }).click();
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
   await page.getByRole('button', { name: 'Trash', exact: true }).first().click();
   await page.getByRole('button', { name: 'Restore', exact: true }).click();
   expect((await call('list_diagrams')).diagrams.map((d: any) => d.id)).toContain(copy.id);
-  await page.getByRole('button', { name: 'Diagrams', exact: true }).click();
+  await page.getByRole('complementary', { name: 'Your diagrams' }).getByRole('button', { name: 'Diagrams', exact: true }).click();
   await page.screenshot({ path: info.outputPath('library.png') });
 });
 
@@ -233,20 +234,96 @@ test('library backups import atomically with new IDs, including trash; invalid r
   expect((await call('get_diagram')).elements).toEqual(current.elements);
 });
 
-test('file menu downloads portable content and imports it as a separate diagram', async ({ page }) => {
+test('document menu exports and the diagrams panel imports and backs up portable content', async ({ page }) => {
   await connect(page); const first = await sample();
-  await page.getByRole('button', { name: 'Files', exact: false }).click();
+  await page.getByRole('button', { name: 'Diagram actions', exact: true }).click();
   const downloading = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export editable diagram', exact: true }).click();
   const download = await downloading;
   const path = await download.path();
   const data = await readFile(path!, 'utf8');
   expect(JSON.parse(data).elements).toHaveLength(5);
-  await page.getByLabel('Import file', { exact: true }).setInputFiles({ name: 'Restored.excalidraw', mimeType: 'application/json', buffer: Buffer.from(data) });
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
+  const choosing = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Import…', exact: true }).click();
+  await (await choosing).setFiles({ name: 'Restored.excalidraw', mimeType: 'application/json', buffer: Buffer.from(data) });
   await expect(page.getByLabel('Diagram name', { exact: true })).toHaveValue('Restored');
   const imported = await call('get_diagram');
   expect(imported.diagramId).not.toBe(first.diagramId);
   expect(imported.elements).toEqual(first.elements);
+  const backingUp = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Back up all diagrams', exact: true }).click();
+  const backup = JSON.parse(await readFile((await (await backingUp).path())!, 'utf8'));
+  expect(backup.type).toBe('diagrams-library');
+  expect(backup.diagrams.map((item: any) => item.id)).toEqual(expect.arrayContaining([first.diagramId, imported.diagramId]));
+});
+
+test('document actions preserve clear confirmation and undo, with accessible desktop and mobile controls', async ({ page }, info) => {
+  await connect(page); const first = await sample();
+  const actions = page.getByRole('button', { name: 'Diagram actions', exact: true });
+  await expect(page.getByTestId('main-menu-trigger')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Files', exact: true })).toHaveCount(0);
+  const shapes = page.getByRole('checkbox', { name: 'Custom Shapes', exact: true });
+  await page.getByTitle('Custom Shapes', { exact: true }).click();
+  await expect(shapes).toBeChecked();
+  await expect(page.locator('.default-sidebar')).toBeVisible();
+  await page.getByTestId('sidebar-close').click();
+  await page.getByRole('button', { name: 'Help', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'Help', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await actions.focus(); await page.keyboard.press('ArrowDown');
+  await expect(page.getByRole('button', { name: 'Rename', exact: true })).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(actions).toBeFocused();
+  await actions.click(); await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  await expect(page.getByLabel('Diagram name', { exact: true })).toBeFocused();
+  await page.getByLabel('Diagram name', { exact: true }).fill('Menu test');
+  await page.getByLabel('Diagram name', { exact: true }).press('Enter');
+  await expect.poll(async () => (await call('get_diagram')).name).toBe('Menu test');
+  await actions.click(); await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
+  await expect(page.getByLabel('Diagram name', { exact: true })).toHaveValue('Menu test copy');
+  const copy = await call('get_diagram');
+  expect(copy.diagramId).not.toBe(first.diagramId);
+
+  const clear = page.getByTestId('clear-canvas-button');
+  const confirm = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Clear canvas', exact: true }) });
+  await actions.click(); await clear.click();
+  await expect(confirm).toBeVisible();
+  await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect((await call('get_diagram')).elements).toEqual(copy.elements);
+  await actions.click(); await clear.click();
+  await confirm.getByRole('button', { name: 'Confirm', exact: true }).click();
+  await expect.poll(async () => (await call('get_diagram')).elements.length).toBe(0);
+  await page.getByTestId('button-undo').click();
+  await expect.poll(async () => (await call('get_diagram')).elements.length).toBe(copy.elements.length);
+  await expect(page.getByTestId('save-status')).toHaveText('Saved in browser');
+
+  await actions.click(); await page.getByRole('button', { name: 'Move to trash', exact: true }).click();
+  await expect.poll(async () => (await call('get_diagram')).diagramId).not.toBe(copy.diagramId);
+  const collection = await call('list_diagrams', { includeTrash: true });
+  expect(collection.diagrams.find((item: any) => item.id === copy.diagramId).deletedAt).toBeTruthy();
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
+  await page.getByRole('button', { name: 'Trash', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Restore', exact: true }).click();
+  expect((await call('list_diagrams')).diagrams.map((item: any) => item.id)).toContain(copy.diagramId);
+  await page.getByRole('button', { name: 'Close diagrams', exact: true }).click();
+  await actions.click();
+  await page.screenshot({ path: info.outputPath('document-menu.png') });
+  await page.keyboard.press('Escape');
+
+  await page.getByRole('button', { name: 'Close agent panel', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByTitle('Custom Shapes', { exact: true }).click();
+  await expect(shapes).toBeChecked();
+  await expect(page.locator('.default-sidebar')).toBeVisible();
+  await page.getByTestId('sidebar-close').click();
+  await actions.click();
+  const bounds = await page.getByRole('group', { name: 'Diagram actions', exact: true }).boundingBox();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  await expect(page.getByRole('button', { name: 'Move to trash', exact: true })).toBeInViewport();
+  await page.screenshot({ path: info.outputPath('mobile-menu.png') });
+  await page.keyboard.press('Escape');
 });
 
 test('storage failure keeps the live canvas exportable and retries without corrupting the previous save', async ({ page }) => {

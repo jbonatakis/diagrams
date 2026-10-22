@@ -112,10 +112,12 @@ export function AgentConnectionPanel({ connection, onClose }: {
     catch { setCopied(false); }
   }
   return <aside className="agent-panel" id="agent-panel" aria-label="Agent connection">
-    <div className="panel-heading"><div><p className="eyebrow">WORK TOGETHER</p><h2>Your agent, on canvas.</h2></div><button className="icon-button" aria-label="Close agent panel" onClick={onClose}>×</button></div>
-    <p className="panel-intro">Approve your agent once. This browser reconnects automatically when you return.</p>
     <div className={`connection-card ${connected ? 'connected' : ''}`}>
-      <div className="connection-heading"><span className={`status-dot ${connected ? 'online' : connecting ? 'pending' : ''}`} /><strong data-testid="connection-status">{connected ? 'Connected' : connecting ? 'Connecting…' : 'Not connected'}</strong></div>
+      <div className="connection-heading">
+        <span className={`status-dot ${connected ? 'online' : connecting ? 'pending' : ''}`} />
+        <strong data-testid="connection-status">{connected ? 'Connected' : connecting ? 'Connecting…' : 'Not connected'}</strong>
+        <button className="icon-button agent-panel-close" aria-label="Close agent panel" onClick={onClose}>×</button>
+      </div>
       <p>{connected ? 'This browser is ready. Only agents you approve can access its library.' : 'Your diagrams stay available while agent access is disconnected.'}</p>
       {connected || connecting
         ? <button className="secondary-button" onClick={connection.disconnect}>Disconnect</button>

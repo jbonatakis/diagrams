@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Excalidraw, MainMenu, WelcomeScreen } from '@excalidraw/excalidraw';
+import { createPortal } from 'react-dom';
+import { DefaultSidebar, Excalidraw, MainMenu, WelcomeScreen } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { useAgentConnection, AgentConnectionPanel } from './connection';
 import { openWorkspace, type Workspace } from './library/workspace';
-import { LibraryPanel, FileActions, importFile } from './library/ui';
+import { LibraryPanel, DiagramActions, download, importFile } from './library/ui';
 import type { DiagramMeta } from './library/scene';
 
 const initialData = {
@@ -39,6 +40,8 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
   const [notice, setNotice] = useState('');
   const [working, setWorking] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const titleInput = useRef<HTMLInputElement>(null);
+  const [documentMenuHost, setDocumentMenuHost] = useState<HTMLDivElement | null>(null);
   const ready = !!workspace.controller;
   const disabled = state.busy || working || !ready;
   async function act(action: () => Promise<unknown>) {
@@ -79,12 +82,14 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     <header className="app-header">
       <a className="brand" href="/" aria-label="Diagrams home" onClick={(event) => event.preventDefault()}><span className="brand-mark"><Mark /></span>Diagrams<span className="phase-label">LAB</span></a>
       <span className="header-divider" />
-      <button className="library-toggle" aria-label="Diagram library" aria-expanded={libraryOpen} onClick={() => setLibraryOpen(!libraryOpen)}>▤ <span>Library</span></button>
-      <input key={state.active.id + state.active.name} className="document-title" aria-label="Diagram name" maxLength={120} defaultValue={state.active.name} disabled={disabled}
-        onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') { event.currentTarget.value = state.active.name; event.currentTarget.blur(); } }}
-        onBlur={(event) => { const name = event.currentTarget.value.trim(); if (name !== state.active.name) { event.currentTarget.value = state.active.name; void act(() => manage(state.active, 'rename', name)); } }} />
+      <button className="library-toggle" aria-label="Diagrams" aria-controls="diagrams-panel" aria-expanded={libraryOpen} onClick={() => setLibraryOpen(!libraryOpen)}><span aria-hidden="true">▤</span> Diagrams</button>
+      <div className="document-controls">
+        <input ref={titleInput} key={state.active.id + state.active.name} className="document-title" aria-label="Diagram name" maxLength={120} defaultValue={state.active.name} disabled={disabled}
+          onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); if (event.key === 'Escape') { event.currentTarget.value = state.active.name; event.currentTarget.blur(); } }}
+          onBlur={(event) => { const name = event.currentTarget.value.trim(); if (name !== state.active.name) { event.currentTarget.value = state.active.name; void act(() => manage(state.active, 'rename', name)); } }} />
+        <div ref={setDocumentMenuHost} />
+      </div>
       <span className={`save-badge ${state.saveStatus}`} data-testid="save-status" role="status">{({ saved: 'Saved in browser', unsaved: 'Unsaved changes', saving: 'Saving…', error: 'Save failed' })[state.saveStatus]}</span>
-      <FileActions disabled={disabled} workspace={workspace} act={act} onImport={() => fileInput.current?.click()} />
       <button className={`connection-toggle ${connected ? 'is-connected' : ''}`} onClick={() => setPanelOpen(!panelOpen)} aria-expanded={panelOpen} aria-controls="agent-panel">
         <span className={`status-dot ${connected ? 'online' : ''}`} />{connected ? 'Canvas connected' : 'Connect agent'}
         <span aria-hidden="true">↗</span>
@@ -96,7 +101,7 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
       if (file) void act(async () => {
         const result = await importFile(workspace, file);
         if (result.id) { await open(result.id); setNotice('Diagram imported.'); }
-        else setNotice(`Imported ${result.count} diagrams. Open the library to choose one.`);
+        else { setLibraryOpen(true); setNotice(`Imported ${result.count} diagrams.`); }
       });
     }} />
     {(uiError || state.error) && <div className="workspace-error" role="alert"><span>{uiError || state.error}</span>{state.saveStatus === 'error' && <button onClick={() => void act(() => workspace.retrySave())}>Retry saving</button>}<button aria-label="Dismiss error" onClick={() => { setUIError(''); workspace.dismissError(); }}>×</button></div>}
@@ -104,17 +109,19 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     <main className="workspace">
       {libraryOpen && <LibraryPanel state={state} disabled={disabled} onClose={() => setLibraryOpen(false)} onOpen={(id) => void act(() => open(id))}
         onCreate={() => void act(async () => { const created = await workspace.run('create_diagram') as DiagramMeta; await open(created.id); })}
+        onImport={() => fileInput.current?.click()} onBackup={() => void act(() => download(workspace, true))}
         onManage={(item, action) => void act(() => manage(item, action))} />}
 
       <section className="canvas-area" aria-label="Diagram canvas" data-testid="editor" inert={disabled}>
         <Excalidraw key={state.editorEpoch} excalidrawAPI={setAPI} initialData={initialData} theme="light" name={state.active.name} aiEnabled={false}
           UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false, toggleTheme: false, export: { saveFileToDisk: true } } }}>
-          <MainMenu>
-            <MainMenu.DefaultItems.Export />
-            <MainMenu.DefaultItems.SaveAsImage />
-            <MainMenu.DefaultItems.ClearCanvas />
-            <MainMenu.DefaultItems.Help />
-          </MainMenu>
+          <MainMenu />
+          {/* Keep native actions inside the editor context while displaying them beside the document title. */}
+          {documentMenuHost && createPortal(<DiagramActions workspace={workspace} disabled={disabled} act={act}
+            onRename={() => { titleInput.current?.focus(); titleInput.current?.select(); }}
+            onDuplicate={() => void act(async () => { const copy = await manage(state.active, 'duplicate') as DiagramMeta; await open(copy.id); })}
+            onTrash={() => void act(() => manage(state.active, 'trash'))} />, documentMenuHost)}
+          <DefaultSidebar.Trigger tab="library" title="Custom Shapes" icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1" /><circle cx="17.5" cy="6.5" r="3.5" /><path d="m6.5 14 4 7h-8z" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>}>Custom Shapes</DefaultSidebar.Trigger>
           <WelcomeScreen>
             <WelcomeScreen.Center>
               <div className="canvas-welcome">
