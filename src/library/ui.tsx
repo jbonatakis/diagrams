@@ -105,10 +105,48 @@ type LibraryProps = {
   onClose: () => void; onCreate: () => void; onOpen: (id: string) => void;
   onImport: () => void; onBackup: () => void;
   onManage: (item: DiagramMeta, action: 'duplicate' | 'trash' | 'restore' | 'recover') => void;
+  onDelete: (items: DiagramMeta[]) => Promise<unknown>;
 };
-export function LibraryPanel({ state, disabled, onClose, onCreate, onOpen, onManage, onImport, onBackup }: LibraryProps) {
+function DeleteTrashDialog({ items, all, disabled, onDelete, onClose }: {
+  items: DiagramMeta[]; all: boolean; disabled: boolean;
+  onDelete: (items: DiagramMeta[]) => Promise<unknown>; onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const heading = useId();
+  const description = useId();
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const element = dialog.current!;
+    element.showModal(); cancel.current?.focus();
+    return () => element.close();
+  }, []);
+  async function confirm() {
+    setDeleting(true); setError('');
+    try { await onDelete(items); onClose(); }
+    catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not delete diagrams. Try again.'); setDeleting(false); }
+  }
+  return <dialog ref={dialog} className="trash-dialog" aria-labelledby={heading} aria-describedby={description}
+    onKeyDown={event => event.stopPropagation()} onCancel={event => { event.preventDefault(); if (!deleting) onClose(); }}>
+    <h2 id={heading}>{all ? 'Empty trash?' : 'Delete diagram permanently?'}</h2>
+    <p id={description}>{all
+      ? `Permanently delete all ${items.length} ${items.length === 1 ? 'diagram' : 'diagrams'} in the trash and their previous saves?`
+      : <>Permanently delete “{items[0].name}” and its previous save?</>} This cannot be undone.</p>
+    {error && <p className="error-message" role="alert">{error}</p>}
+    <div className="trash-dialog-actions">
+      <button ref={cancel} className="secondary-button" disabled={deleting} onClick={onClose}>Cancel</button>
+      <button className="delete-button" disabled={disabled || deleting} onClick={() => void confirm()}>{deleting ? 'Deleting…' : all ? 'Empty trash' : 'Delete permanently'}</button>
+    </div>
+  </dialog>;
+}
+
+export function LibraryPanel({ state, disabled, onClose, onCreate, onOpen, onManage, onDelete, onImport, onBackup }: LibraryProps) {
   const [trash, setTrash] = useState(false);
   const [search, setSearch] = useState('');
+  const [pendingDelete, setPendingDelete] = useState<{ items: DiagramMeta[]; all: boolean } | null>(null);
+  const trashTab = useRef<HTMLButtonElement>(null);
+  const trashed = state.documents.filter(item => item.deletedAt);
   const items = state.documents.filter((item) => !!item.deletedAt === trash && item.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   const totalBytes = state.documents.reduce((total, item) => total + estimatedStorageBytes(item.storageSize), 0);
   return <aside id="diagrams-panel" className="library-panel" aria-label="Your diagrams">
@@ -116,7 +154,10 @@ export function LibraryPanel({ state, disabled, onClose, onCreate, onOpen, onMan
     <button className="primary-button" disabled={disabled} onClick={onCreate}>New diagram <span aria-hidden="true">+</span></button>
     <button className="secondary-button" disabled={disabled} onClick={onImport}>Import…</button>
     <input className="library-search" aria-label="Search diagrams" placeholder="Search diagrams…" value={search} onChange={(event) => setSearch(event.target.value)} />
-    <div className="library-tabs"><button aria-pressed={!trash} onClick={() => setTrash(false)}>Diagrams</button><button aria-pressed={trash} onClick={() => setTrash(true)}>Trash</button></div>
+    <div className="library-tabs"><button aria-pressed={!trash} onClick={() => setTrash(false)}>Diagrams</button><button ref={trashTab} aria-pressed={trash} onClick={() => setTrash(true)}>Trash</button></div>
+    {trash && <div className="trash-tools"><span>{trashed.length} {trashed.length === 1 ? 'diagram' : 'diagrams'}</span>
+      <button className="empty-trash-button" disabled={disabled || !trashed.length} onClick={() => setPendingDelete({ items: trashed, all: true })}>Empty trash</button>
+    </div>}
     <ul className="diagram-list">{items.map((item) => <li key={item.id} className={item.id === state.active.id ? 'active' : ''}>
       <button className="diagram-open" disabled={disabled || trash} onClick={() => onOpen(item.id)} aria-current={item.id === state.active.id ? 'true' : undefined}>
         <strong>{item.name}</strong>
@@ -124,11 +165,16 @@ export function LibraryPanel({ state, disabled, onClose, onCreate, onOpen, onMan
           <span className="diagram-size" aria-label={`Estimated storage: ${formatStorageSize(estimatedStorageBytes(item.storageSize))}`} title="Estimated storage, including embedded images, metadata and the previous save. Browser database overhead is not included.">~{formatStorageSize(estimatedStorageBytes(item.storageSize))}</span>
         </span>
       </button>
-      <div className="diagram-actions">{trash ? <button disabled={disabled} onClick={() => onManage(item, 'restore')}>Restore</button> : <><button disabled={disabled} onClick={() => onManage(item, 'duplicate')}>Duplicate</button><button disabled={disabled} onClick={() => onManage(item, 'trash')}>Trash</button></>}
+      <div className="diagram-actions">{trash ? <><button disabled={disabled} onClick={() => onManage(item, 'restore')}>Restore</button>
+        <button className="danger-action" disabled={disabled} onClick={() => setPendingDelete({ items: [item], all: false })}>Delete permanently</button>
+      </> : <><button disabled={disabled} onClick={() => onManage(item, 'duplicate')}>Duplicate</button><button disabled={disabled} onClick={() => onManage(item, 'trash')}>Trash</button></>}
         <button disabled={disabled} title="Restore the previous autosaved version" onClick={() => onManage(item, 'recover')}>Recover previous save</button>
       </div>
     </li>)}</ul>
-    {!items.length && <p className="library-empty">{trash ? 'No diagrams in the trash.' : 'No matching diagrams.'}</p>}
+    {!items.length && <p className="library-empty">{trash && !trashed.length ? 'No diagrams in the trash.' : 'No matching diagrams.'}</p>}
+    {pendingDelete && <DeleteTrashDialog {...pendingDelete} disabled={disabled} onDelete={onDelete} onClose={() => {
+      setPendingDelete(null); requestAnimationFrame(() => trashTab.current?.focus());
+    }} />}
     <div className="library-backup">
       <p className="library-storage-summary" title="Includes all saved diagrams, previous saves and trash. Browser database overhead is not included."><span>Estimated storage</span><span data-testid="library-storage-total">~{formatStorageSize(totalBytes)}</span></p>
       <button className="secondary-button" disabled={disabled} onClick={onBackup}>Back up all diagrams</button>

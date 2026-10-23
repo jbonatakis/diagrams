@@ -14,6 +14,9 @@ test.beforeEach(async ({ page }) => {
 test.afterEach(async ({ page }) => {
   if (!page.isClosed()) {
     await page.keyboard.press('Escape');
+    // The mobile library overlays the agent sidebar until it is closed.
+    const closeDiagrams = page.getByRole('button', { name: 'Close diagrams', exact: true });
+    if (await closeDiagrams.isVisible().catch(() => false)) await closeDiagrams.click();
     const disconnect = page.getByRole('button', { name: 'Pause agent access', exact: true });
     if (await disconnect.isVisible().catch(() => false)) await disconnect.click();
   }
@@ -88,6 +91,108 @@ function measuredSize(disk: Awaited<ReturnType<typeof stored>>) {
     metadataBytes: Buffer.byteLength(JSON.stringify(meta)),
   };
 }
+
+async function trashWithRecovery(name: string) {
+  const active = await call('get_diagram');
+  const copy = await call('manage_diagram', { diagramId: active.diagramId, expectedRevision: active.revision, action: 'duplicate', name });
+  const replaced = await call('import_diagram', { data: empty, replaceDiagramId: copy.id, expectedRevision: copy.revision });
+  return call('manage_diagram', { diagramId: copy.id, expectedRevision: replaced.revision, action: 'trash' });
+}
+const deletionTarget = (item: { id: string; revision: number }) => ({ diagramId: item.id, expectedRevision: item.revision });
+const removedRecords = { meta: undefined, scene: undefined, recovery: undefined };
+
+test('trash can be permanently cleared individually or in full, with confirmation and updated sizes', async ({ page }, info) => {
+  await connect(page); const active = await sample();
+  const first = await trashWithRecovery('Trash one');
+  const second = await trashWithRecovery('Trash two');
+  const third = await trashWithRecovery('Hidden by search');
+  const original = await stored(page, first.id);
+  expect(original.recovery.elements.length).toBeGreaterThan(0);
+  const beforeTotal = (await call('list_diagrams', { includeTrash: true })).diagrams.reduce((sum: number, item: any) => sum + estimatedStorageBytes(item.storageSize), 0);
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
+  const panel = page.getByRole('complementary', { name: 'Your diagrams' });
+  await panel.locator('.library-tabs').getByRole('button', { name: 'Trash', exact: true }).click();
+  const firstRow = panel.locator('li').filter({ has: page.getByText('Trash one', { exact: true }) });
+  const dialog = page.getByRole('dialog');
+  await firstRow.getByRole('button', { name: 'Delete permanently', exact: true }).click();
+  await expect(dialog).toContainText('Trash one');
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(await stored(page, first.id)).toEqual(original);
+  await firstRow.getByRole('button', { name: 'Delete permanently', exact: true }).click();
+  await call('manage_diagram', { ...deletionTarget(first), action: 'rename', name: first.name });
+  await dialog.getByRole('button', { name: 'Delete permanently', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('changed');
+  expect((await stored(page, first.id)).meta).toBeTruthy();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await firstRow.getByRole('button', { name: 'Delete permanently', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Delete permanently', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(firstRow).toHaveCount(0);
+  expect(await stored(page, first.id)).toEqual(removedRecords);
+
+  await panel.getByLabel('Search diagrams').fill('Trash two');
+  await expect(panel.locator('.diagram-list li')).toHaveCount(1);
+  await panel.getByRole('button', { name: 'Empty trash', exact: true }).click();
+  await expect(dialog).toContainText('all 2 diagrams');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  expect((await stored(page, second.id)).meta).toBeTruthy();
+  expect((await stored(page, third.id)).meta).toBeTruthy();
+  await panel.getByRole('button', { name: 'Empty trash', exact: true }).click();
+  await page.screenshot({ path: info.outputPath('empty-trash-confirmation.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(dialog.getByRole('button', { name: 'Empty trash', exact: true })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeInViewport();
+  await page.screenshot({ path: info.outputPath('empty-trash-mobile.png') });
+  await dialog.getByRole('button', { name: 'Empty trash', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel.getByText('No diagrams in the trash.', { exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Empty trash', exact: true })).toBeDisabled();
+  for (const item of [second, third]) expect(await stored(page, item.id)).toEqual(removedRecords);
+  const remaining = (await call('list_diagrams', { includeTrash: true })).diagrams;
+  expect(remaining.map((item: any) => item.id)).toEqual([active.diagramId]);
+  const total = estimatedStorageBytes(remaining[0].storageSize);
+  expect(total).toBeLessThan(beforeTotal);
+  await expect(panel.getByTestId('library-storage-total')).toHaveText(`~${formatStorageSize(total)}`);
+  expect((await call('get_diagram')).elements).toEqual(active.elements);
+  await page.reload(); await connect(page, false);
+  expect((await call('list_diagrams', { includeTrash: true })).diagrams.map((item: any) => item.id)).toEqual([active.diagramId]);
+});
+
+test('permanent deletion rejects changed or untrashed targets and rolls back a failed batch', async ({ page }) => {
+  await page.addInitScript(() => {
+    const remove = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.delete = function (...args: Parameters<typeof remove>) {
+      if (this.name === 'recovery' && args[0] === sessionStorage.getItem('fail-delete')) throw new DOMException('Test deletion failure', 'UnknownError');
+      return remove.apply(this, args);
+    };
+  });
+  await connect(page); const active = await sample();
+  const first = await trashWithRecovery('First');
+  const second = await trashWithRecovery('Second');
+  const target = deletionTarget(first);
+  await fails('delete_diagrams', { diagrams: [target, { diagramId: active.diagramId, expectedRevision: active.revision }] }, 'diagram_not_trashed');
+  await fails('delete_diagrams', { diagrams: [target, target] }, 'invalid_arguments');
+  await fails('delete_diagrams', { diagrams: [target, { diagramId: 'missing-diagram', expectedRevision: 0 }] }, 'diagram_not_found');
+  const renamed = await call('manage_diagram', { ...deletionTarget(second), action: 'rename', name: 'Changed' });
+  await fails('delete_diagrams', { diagrams: [target, deletionTarget(second)] }, 'revision_conflict');
+  const restored = await call('manage_diagram', { ...deletionTarget(renamed), action: 'restore' });
+  await fails('delete_diagrams', { diagrams: [target, deletionTarget(restored)] }, 'diagram_not_trashed');
+  const trashed = await call('manage_diagram', { ...deletionTarget(restored), action: 'trash' });
+  const beforeFirst = await stored(page, first.id);
+  const beforeSecond = await stored(page, second.id);
+  await page.evaluate(id => sessionStorage.setItem('fail-delete', id), second.id);
+  const diagrams = [target, deletionTarget(trashed)];
+  await fails('delete_diagrams', { diagrams }, 'storage_error');
+  expect(await stored(page, first.id)).toEqual(beforeFirst);
+  expect(await stored(page, second.id)).toEqual(beforeSecond);
+  await page.evaluate(() => sessionStorage.removeItem('fail-delete'));
+  expect(await call('delete_diagrams', { diagrams })).toEqual({ deletedIds: [first.id, second.id], count: 2 });
+  for (const item of [first, second]) expect(await stored(page, item.id)).toEqual(removedRecords);
+  await fails('delete_diagrams', { diagrams }, 'diagram_not_found');
+  expect((await call('get_diagram')).elements).toEqual(active.elements);
+});
 
 test('storage estimates include images, recovery and trash without opening diagrams', async ({ page }, info) => {
   await connect(page);
@@ -437,6 +542,7 @@ test('storage failure keeps the live canvas exportable and retries without corru
     };
   });
   await connect(page); const created = await sample();
+  const old = await trashWithRecovery('Free this space');
   await call('list_diagrams');
   const before = await stored(page, created.diagramId);
   await page.evaluate(() => sessionStorage.setItem('test-quota', 'yes'));
@@ -452,6 +558,18 @@ test('storage failure keeps the live canvas exportable and retries without corru
   expect(await stored(page, created.diagramId)).toEqual(before);
   const live = JSON.parse((await exported('export_diagram', { diagramId: created.diagramId })).data);
   expect(live.elements.find((e: any) => e.id === 'box').y).toBe(420);
+  const listing = await call('list_diagrams', { includeTrash: true });
+  expect(listing.saveStatus).toBe('error');
+  expect(listing.diagrams.find((item: any) => item.id === old.id).deletedAt).toBeTruthy();
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
+  const panel = page.getByRole('complementary', { name: 'Your diagrams' });
+  await panel.locator('.library-tabs').getByRole('button', { name: 'Trash', exact: true }).click();
+  await panel.getByRole('button', { name: 'Empty trash', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Empty trash', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await stored(page, old.id)).toEqual(removedRecords);
+  expect(await stored(page, created.diagramId)).toEqual(before);
+  expect((await call('get_diagram')).elements.find((e: any) => e.id === 'box').y).toBe(420);
   await page.evaluate(() => sessionStorage.removeItem('test-quota'));
   await page.getByRole('button', { name: 'Retry saving', exact: true }).click();
   await expect(page.getByTestId('save-status')).toHaveText('Saved in browser');

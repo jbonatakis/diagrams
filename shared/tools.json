@@ -874,7 +874,7 @@
     }
   },
   "list_diagrams": {
-    "description": "List the browser library and active diagram ID/revision. Each diagram includes storageSize estimates in bytes: sceneBytes (including embedded images), recoveryBytes (previous save), and metadataBytes. Sum these for its estimated saved data size; browser database overhead is excluded. Include trash to find deleted diagrams for restoration and account for their storage.",
+    "description": "List the saved browser library and active diagram ID/revision, plus saveStatus and saveError if current canvas edits could not be saved. Listing still works after a save failure so trash can be cleared to free space. Each diagram includes storageSize estimates in bytes: sceneBytes (including embedded images), recoveryBytes (previous save), and metadataBytes. Sum these for its estimated saved data size; browser database overhead is excluded. Include trash to find diagrams for restoration or permanent deletion and account for their storage.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -976,6 +976,29 @@
           "name"
         ]
       }
+    }
+  },
+  "delete_diagrams": {
+    "description": "Permanently delete one or more trashed diagrams, including their embedded images, metadata and recovery copies. This cannot be undone. First call list_diagrams with includeTrash:true and pass the IDs and revisions of the trashed diagrams to remove. To empty trash, include every trashed diagram from that list. The entire batch is atomic: missing, restored or changed diagrams fail without removing anything. Active and untrashed diagrams cannot be deleted. Works even if the active canvas cannot save; leaves its edits untouched. Returns deletedIds and count. After a timeout, inspect the library before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "diagrams": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "diagramId": { "type": "string", "minLength": 1, "maxLength": 100 },
+              "expectedRevision": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["diagramId", "expectedRevision"]
+          }
+        }
+      },
+      "required": ["diagrams"]
     }
   },
   "export_diagram": {

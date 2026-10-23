@@ -37,6 +37,7 @@ export type Operation = ShapeOperation | ConnectOperation | TextOperation | Line
   | { op: 'distribute'; ids: string[]; axis: 'horizontal' | 'vertical' };
 export type ApplyArguments = { diagramId: string; expectedRevision: number; requestId?: string; operations: Operation[] };
 export type ViewArguments = { diagramId: string; elementIds?: string[]; selectionOnly?: boolean; maxSize?: number };
+export type DeleteDiagramTarget = { diagramId: string; expectedRevision: number };
 export type ToolName = keyof typeof definitions;
 
 export class CommandError extends Error {

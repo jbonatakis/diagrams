@@ -1,4 +1,4 @@
-import { CommandError } from '../protocol';
+import { CommandError, type DeleteDiagramTarget } from '../protocol';
 import { byteLength, MAX_DOCUMENT_BYTES, parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene, type StorageSize } from './scene';
 
 const request = <T>(r: IDBRequest<T>) => new Promise<T>((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
@@ -133,6 +133,43 @@ export class DiagramStorage {
   }
 
   async activeId(): Promise<string | undefined> { return request(this.db.transaction('settings').objectStore('settings').get('active')); }
+  async deleteTrashed(targets: DeleteDiagramTarget[], deadline: number) {
+    if (!targets.length || new Set(targets.map(item => item.diagramId)).size !== targets.length) {
+      throw new CommandError('invalid_arguments', 'Choose one or more different diagrams to delete.');
+    }
+    const tx = this.db.transaction(['diagrams', 'scenes', 'recovery', 'settings'], 'readwrite');
+    const done = completed(tx);
+    let failure: unknown;
+    let remaining = targets.length + 1;
+    let activeId: string | undefined;
+    const records = new Map<string, DiagramMeta | undefined>();
+    const remove = () => {
+      if (--remaining) return;
+      try {
+        if (Date.now() > deadline) throw new CommandError('expired_request', 'The deletion request expired. Nothing was removed. Inspect the library before trying again.');
+        // Validate every target in the same transaction before deleting any.
+        for (const target of targets) {
+          const meta = records.get(target.diagramId);
+          if (!meta) throw new CommandError('diagram_not_found', 'A diagram no longer exists. Refresh the library and try again.');
+          if (!meta.deletedAt || meta.id === activeId) throw new CommandError('diagram_not_trashed', 'Only diagrams in the trash can be permanently deleted.');
+          if (meta.revision !== target.expectedRevision) throw new CommandError('revision_conflict', 'A trashed diagram changed. Close this confirmation and try again.');
+        }
+        for (const { diagramId } of targets) {
+          for (const store of ['diagrams', 'scenes', 'recovery']) tx.objectStore(store).delete(diagramId);
+        }
+      } catch (error) { failure = error; tx.abort(); }
+    };
+    const active = tx.objectStore('settings').get('active');
+    active.onsuccess = () => { activeId = active.result; remove(); };
+    for (const { diagramId } of targets) {
+      const meta = tx.objectStore('diagrams').get(diagramId);
+      meta.onsuccess = () => { records.set(diagramId, meta.result); remove(); };
+    }
+    try { await done; }
+    catch (error) { throw failure instanceof CommandError ? failure : new CommandError('storage_error', 'Could not delete diagrams. Nothing was removed. Try again.'); }
+    for (const { diagramId } of targets) this.measured.delete(diagramId);
+  }
+
   async setActive(id: string) {
     const tx = this.db.transaction('settings', 'readwrite'); const done = completed(tx);
     tx.objectStore('settings').put(id, 'active'); await done;

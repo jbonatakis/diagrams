@@ -109,7 +109,8 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
       {libraryOpen && <LibraryPanel state={state} disabled={disabled} onClose={() => setLibraryOpen(false)} onOpen={(id) => void act(() => open(id))}
         onCreate={() => void act(async () => { const created = await workspace.run('create_diagram') as DiagramMeta; await open(created.id); })}
         onImport={() => fileInput.current?.click()} onBackup={() => void act(() => download(workspace, true))}
-        onManage={(item, action) => void act(() => manage(item, action))} />}
+        onManage={(item, action) => void act(() => manage(item, action))}
+        onDelete={items => workspace.run('delete_diagrams', { diagrams: items.map(item => ({ diagramId: item.id, expectedRevision: item.revision })) })} />}
 
       <section className="canvas-area" aria-label="Diagram canvas" data-testid="editor" inert={disabled}>
         <Excalidraw key={state.editorEpoch} excalidrawAPI={setAPI} initialData={initialData} theme="light" name={state.active.name} aiEnabled={false}

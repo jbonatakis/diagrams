@@ -1,6 +1,6 @@
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { DiagramController } from '../editor/controller';
-import { CommandError, validateArguments, type ApplyArguments, type Command, type ViewArguments } from '../protocol';
+import { CommandError, validateArguments, type ApplyArguments, type Command, type DeleteDiagramTarget, type ViewArguments } from '../protocol';
 import { DiagramStorage, storageError } from './storage';
 import { Transfers } from './transfers';
 import { byteLength, diagramName, emptyScene, exportDiagram, MAX_DOCUMENT_BYTES, MAX_LIBRARY_BYTES, parseJSON, parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene } from './scene';
@@ -194,7 +194,7 @@ export class Workspace {
         return { ...this.controller.snapshot(), copies: result.copies, name: this.active.name, saveStatus: this.status,
           saveError: this.error || undefined, replayed: false, appliedRevision: result.revision };
       }
-      const mutating = ['create_diagram', 'open_diagram', 'manage_diagram', 'import_diagram', 'import_library'].includes(tool);
+      const mutating = ['create_diagram', 'open_diagram', 'manage_diagram', 'delete_diagrams', 'import_diagram', 'import_library'].includes(tool);
       if (mutating) { this.controller.assertIdle(); this.busy = true; this.notify(); }
       try { return await this.perform(tool, command.arguments as Record<string, any>, command.deadline); }
       finally { if (mutating) { this.busy = false; this.notify(); } }
@@ -210,8 +210,18 @@ export class Workspace {
 
   private async perform(tool: string, args: Record<string, any>, deadline: number): Promise<unknown> {
     if (tool === 'list_diagrams') {
-      await this.flush();
-      return { activeDiagramId: this.active.id, activeRevision: this.controller!.revision, diagrams: this.documents.filter((item) => args.includeTrash || !item.deletedAt).map(({ storageVersion: _version, operationReceipts: _receipts, ...meta }) => meta) };
+      await this.flush().catch(() => {});
+      return { activeDiagramId: this.active.id, activeRevision: this.controller!.revision, saveStatus: this.status, saveError: this.error || undefined,
+        diagrams: this.documents.filter((item) => args.includeTrash || !item.deletedAt).map(({ storageVersion: _version, operationReceipts: _receipts, ...meta }) => meta) };
+    }
+    if (tool === 'delete_diagrams') {
+      const targets = args.diagrams as DeleteDiagramTarget[];
+      if (targets.some(item => item.diagramId === this.active.id)) throw new CommandError('diagram_not_trashed', 'Only diagrams in the trash can be permanently deleted.');
+      // Freeing space must work even when unsaved canvas edits exceed quota.
+      // This only touches trash; it never switches or saves the active canvas.
+      await this.storage.deleteTrashed(targets, deadline);
+      await this.refresh();
+      return { deletedIds: targets.map(item => item.diagramId), count: targets.length };
     }
     if (tool === 'release_transfer') { this.transfers.finish(args.transferId); return { released: true }; }
     if (tool === 'read_export') return this.transfers.read(args.artifactId, args.offset ?? 0, args.length ?? 16_000);
