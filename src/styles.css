@@ -25,7 +25,30 @@ button:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px soli
 .status-dot.pending { background: #bd9f55; animation: pulse 1.4s infinite; }
 @keyframes pulse { 50% { opacity: .35; } }
 .workspace { display: flex; flex: 1; min-height: 0; position: relative; }
-.canvas-area { flex: 1; min-width: 0; height: 100%; position: relative; }
+.canvas-area { --search-top: 10px; --search-height: 48px; flex: 1; min-width: 0; height: 100%; position: relative; display: flex; flex-direction: column; background: #fcfcf9; }
+.canvas-editor { flex: 1; min-height: 0; position: relative; }
+.search-toggle { display: grid; place-items: center; flex-shrink: 0; width: 34px; height: 34px; border: 1px solid #d6dcd0; border-radius: 7px; color: #53664a; background: #fffefa; }
+.search-toggle:hover, .search-toggle[aria-expanded="true"] { background: #e6eddc; }
+.canvas-search { display: flex; align-items: center; position: absolute; top: var(--search-top); left: 50%; transform: translateX(-50%); z-index: 5; width: var(--search-width, min(552px, calc(100% - 32px))); height: var(--search-height); gap: 4px; padding: 7px 9px 7px 15px; border: 1px solid #dedfd8; border-radius: 15px; background: #fffffd; color: #778071; box-shadow: 0 2px 4px #28382e06, 0 8px 24px #28382e0d, inset 0 1px 0 #fff; }
+.canvas-search:focus-within { border-color: #bfcbb6; box-shadow: 0 0 0 3px #8fa3750d, 0 2px 4px #28382e06, 0 8px 24px #28382e0f; }
+.canvas-search > svg { flex-shrink: 0; width: 20px; height: 20px; margin-right: 6px; color: #8a9383; }
+.canvas-search input { flex: 1; width: 0; min-width: 0; border: 0; padding: 4px 0; font-size: 16px; line-height: 24px; letter-spacing: -.2px; color: #28382e; background: transparent; outline: none; appearance: none; }
+.canvas-search input::placeholder { color: #969d91; }
+.canvas-search-count { min-width: 68px; padding-inline: 4px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.canvas-search-count:empty { display: none; }
+.canvas-search button { display: grid; place-items: center; flex-shrink: 0; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px; color: inherit; background: transparent; }
+.canvas-search button:disabled { opacity: .3; }
+.canvas-search button:hover:not(:disabled) { background: #eef0e9; color: #44543c; }
+.canvas-search button:focus-visible { outline-offset: 1px; }
+/* Move only the drawing tools, leaving the canvas and sidebar triggers anchored. */
+.canvas-search ~ .canvas-editor .App-toolbar-container > .App-toolbar { translate: 0 calc(var(--search-top) + var(--search-height)); }
+/* Leave room beside the lowered mobile toolbar for the fixed Custom Shapes controls. */
+.canvas-search ~ .canvas-editor .excalidraw--mobile .App-toolbar--mobile { translate: -18px calc(var(--search-top) + var(--search-height)); }
+.canvas-search ~ .canvas-editor .excalidraw--mobile .App-toolbar--mobile > .Stack_horizontal { column-gap: 0; }
+/* Excalidraw 0.18 has no option to remove the built-in search tab. Its action opens our find bar. */
+.canvas-area .default-sidebar .sidebar-tab-trigger[aria-controls$="-content-search"] { display: none; }
+.custom-shapes-heading { align-self: center; font-size: 12px; margin-left: 4px; white-space: nowrap; }
+@media (max-width: 700px) { .canvas-area { --search-top: 8px; } .canvas-search { padding-inline: 10px 6px; gap: 2px; border-radius: 13px; } .canvas-search > svg { width: 18px; height: 18px; margin-right: 3px; } .canvas-search-count { min-width: 62px; padding-inline: 2px; } }
 .excalidraw { --color-primary: #647b51; --color-primary-darker: #4c603b; --color-primary-darkest: #374b2f; --color-primary-light: #e6eddc; --color-primary-light-darker: #dce5ce; --color-primary-container: #e6eddc; --border-radius-lg: 9px; }
 /* Excalidraw 0.18 has no prop to hide this trigger. Document actions live in our header. */
 .canvas-area .excalidraw .main-menu-trigger { display: none; }

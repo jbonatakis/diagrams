@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { DefaultSidebar, Excalidraw, MainMenu, WelcomeScreen } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
@@ -6,6 +6,7 @@ import { useAgentConnection, AgentConnectionPanel } from './connection';
 import { openWorkspace, type Workspace } from './library/workspace';
 import { LibraryPanel, DiagramActions, download, importFile } from './library/ui';
 import type { DiagramMeta } from './library/scene';
+import { CanvasSearch, SearchIcon } from './editor/CanvasSearch';
 
 const initialData = {
   appState: {
@@ -57,6 +58,9 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
   }
   const [api, setAPI] = useState<ExcalidrawImperativeAPI | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const editorContainer = useRef<HTMLDivElement>(null);
+  const openSearch = useCallback(() => setSearchOpen(true), []);
   const [setupHintDismissed, setSetupHintDismissed] = useState(false);
   const connection = useAgentConnection(workspace);
   const needsAgent = connection.agentsLoaded && connection.agents.length === 0;
@@ -90,6 +94,7 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
           onBlur={(event) => { const name = event.currentTarget.value.trim(); if (name !== state.active.name) { event.currentTarget.value = state.active.name; void act(() => manage(state.active, 'rename', name)); } }} />
         <div ref={setDocumentMenuHost} />
       </div>
+      <button className="search-toggle" aria-label="Find in diagram" title="Find in diagram (⌘ / Ctrl + F)" aria-controls="canvas-search" aria-expanded={searchOpen} disabled={disabled} onClick={() => setSearchOpen(!searchOpen)}><SearchIcon /></button>
       <span className={`save-badge ${state.saveStatus}`} data-testid="save-status" role="status">{({ saved: 'Saved in browser', unsaved: 'Unsaved changes', saving: 'Saving…', error: 'Save failed' })[state.saveStatus]}</span>
       <button className={`connection-toggle${needsAgent && !setupHintDismissed ? ' needs-setup' : ''}`}
         onClick={() => { setPanelOpen(!panelOpen); setSetupHintDismissed(true); }} onAnimationEnd={() => setSetupHintDismissed(true)}
@@ -117,6 +122,11 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
         onDelete={items => workspace.run('delete_diagrams', { diagrams: items.map(item => ({ diagramId: item.id, expectedRevision: item.revision })) })} />}
 
       <section className="canvas-area" aria-label="Diagram canvas" data-testid="editor" inert={disabled}>
+        <CanvasSearch key={state.editorEpoch} api={disabled ? null : api} open={searchOpen} onOpen={openSearch} onClose={() => {
+          setSearchOpen(false);
+          editorContainer.current?.querySelector<HTMLElement>('.excalidraw')?.focus({ preventScroll: true });
+        }} />
+        <div ref={editorContainer} className="canvas-editor">
         <Excalidraw key={state.editorEpoch} excalidrawAPI={setAPI} initialData={initialData} theme="light" name={state.active.name} aiEnabled={false}
           UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false, toggleTheme: false, export: { saveFileToDisk: true } } }}>
           <MainMenu />
@@ -126,6 +136,7 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
             onDuplicate={() => void act(async () => { const copy = await manage(state.active, 'duplicate') as DiagramMeta; await open(copy.id); })}
             onTrash={() => void act(() => manage(state.active, 'trash'))} />, documentMenuHost)}
           <DefaultSidebar.Trigger tab="library" title="Custom Shapes" icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1" /><circle cx="17.5" cy="6.5" r="3.5" /><path d="m6.5 14 4 7h-8z" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>}>Custom Shapes</DefaultSidebar.Trigger>
+          <DefaultSidebar.TabTriggers><span className="custom-shapes-heading">Custom Shapes</span></DefaultSidebar.TabTriggers>
           <WelcomeScreen>
             <WelcomeScreen.Center>
               <div className="canvas-welcome">
@@ -138,6 +149,7 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
             </WelcomeScreen.Center>
           </WelcomeScreen>
         </Excalidraw>
+        </div>
         {(state.busy || working || !ready) && <div className="canvas-busy" aria-label="Updating library" />}
       </section>
 
