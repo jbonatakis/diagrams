@@ -34,7 +34,7 @@ func testServer(t *testing.T, timeout time.Duration) (*Server, *memoryHTTPServer
 	return app, httpServer
 }
 
-func dialBrowser(t *testing.T, server *memoryHTTPServer, browser *testBrowser, diagram string) *websocket.Conn {
+func dialBrowser(t *testing.T, server *memoryHTTPServer, browser *testBrowser, diagram string, capabilities ...string) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -43,7 +43,7 @@ func dialBrowser(t *testing.T, server *memoryHTTPServer, browser *testBrowser, d
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.CloseNow() })
-	if err := wsjson.Write(ctx, conn, bridgeMessage{Type: "hello", DiagramID: diagram}); err != nil {
+	if err := wsjson.Write(ctx, conn, bridgeMessage{Type: "hello", DiagramID: diagram, Capabilities: capabilities}); err != nil {
 		t.Fatal(err)
 	}
 	return conn
@@ -128,7 +128,7 @@ func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
 	client := mcpClient(t, server, credentials.Access)
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 20 {
+	if err != nil || len(tools.Tools) != 22 {
 		t.Fatalf("tools: %v, %v", tools, err)
 	}
 	seenTools := make(map[string]bool)
@@ -163,7 +163,7 @@ func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
 	if !seenTools["list_custom_shapes"] || !seenTools["insert_custom_shape"] || !seenTools["preview_custom_shapes"] {
 		t.Fatal("missing custom shape tools")
 	}
-	for _, name := range []string{"list_diagrams", "create_diagram", "open_diagram", "manage_diagram", "delete_diagrams", "import_diagram", "export_diagram", "import_library", "export_library", "begin_import", "write_import_chunk", "read_export", "release_transfer", "preview_diagram", "fit_canvas"} {
+	for _, name := range []string{"list_diagrams", "create_diagram", "open_diagram", "manage_diagram", "delete_diagrams", "import_diagram", "export_diagram", "import_library", "export_library", "get_export", "cancel_export", "begin_import", "write_import_chunk", "read_export", "release_transfer", "preview_diagram", "fit_canvas"} {
 		if !seenTools[name] {
 			t.Fatalf("missing tool: %s", name)
 		}

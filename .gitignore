@@ -12,3 +12,4 @@ playwright-report/
 public/fonts/
 *.tsbuildinfo
 data/
+specs/

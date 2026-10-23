@@ -80,17 +80,25 @@ export function sceneFile(scene: Scene) {
   return result;
 }
 
-export async function exportDiagram(diagram: Diagram, format: 'excalidraw' | 'svg' | 'png') {
+export type DiagramBlob = { filename: string; mimeType: string; blob: Blob };
+
+export async function exportDiagramBlob(diagram: Diagram, format: 'excalidraw' | 'svg' | 'png'): Promise<DiagramBlob> {
   const filename = `${diagram.name.replace(/[^\p{L}\p{N} _.-]/gu, '_').slice(0,100) || 'diagram'}.${format}`;
-  if (format === 'excalidraw') return { filename, mimeType: 'application/json', encoding: 'utf8' as const, data: JSON.stringify(sceneFile(diagram.scene)) };
+  if (format === 'excalidraw') return { filename, mimeType: 'application/json', blob: new Blob([JSON.stringify(sceneFile(diagram.scene))], { type: 'application/json' }) };
   const elements = diagram.scene.elements.filter((item) => !item.isDeleted);
   if (!elements.length) throw new CommandError('empty_diagram', 'Add something to the diagram before exporting an image.');
   const options = { elements, files: diagram.scene.files, appState: { ...diagram.scene.appState, exportBackground: true, exportWithDarkMode: false } };
   if (format === 'svg') {
     const svg = await exportToSvg({ ...options, renderEmbeddables: false });
-    return { filename, mimeType: 'image/svg+xml', encoding: 'utf8' as const, data: svg.outerHTML };
+    return { filename, mimeType: 'image/svg+xml', blob: new Blob([svg.outerHTML], { type: 'image/svg+xml' }) };
   }
   const blob = await exportToBlob({ ...options, mimeType: 'image/png', maxWidthOrHeight: 4096 });
+  return { filename, mimeType: 'image/png', blob };
+}
+
+export async function exportDiagram(diagram: Diagram, format: 'excalidraw' | 'svg' | 'png') {
+  const { filename, mimeType, blob } = await exportDiagramBlob(diagram, format);
+  if (format !== 'png') return { filename, mimeType, encoding: 'utf8' as const, data: await blob.text() };
   const data = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader(); reader.onerror = () => reject(reader.error);
     reader.onload = () => resolve(String(reader.result).split(',')[1]); reader.readAsDataURL(blob);

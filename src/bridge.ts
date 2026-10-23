@@ -31,7 +31,7 @@ export class BrowserBridge {
     const socket = new WebSocket(url);
     this.socket = socket;
     socket.onopen = () => {
-      socket.send(JSON.stringify({ type: 'hello', diagramId: this.controller.diagramId }));
+      socket.send(JSON.stringify({ type: 'hello', diagramId: this.controller.diagramId, capabilities: ['hosted_exports_v1'] }));
     };
     socket.onmessage = async (event) => {
       if (this.stopped || this.socket !== socket) return;
@@ -57,9 +57,12 @@ export class BrowserBridge {
           payload = JSON.stringify(response);
         }
         if (socket.readyState === WebSocket.OPEN) socket.send(payload);
+        const activityLabel = command.tool === '__hosted_export_job' ? 'Preparing hosted export'
+          : command.tool === '__cancel_hosted_export' ? 'Cancelling hosted export'
+          : `Agent: ${command.tool.replaceAll('_', ' ')}`;
         this.onActivity({
           id: command.id,
-          label: response.error?.message ?? `Agent: ${command.tool.replaceAll('_', ' ')}`,
+          label: response.error?.message ?? activityLabel,
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           error: Boolean(response.error),
         });

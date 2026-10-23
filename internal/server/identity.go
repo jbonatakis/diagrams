@@ -102,11 +102,88 @@ CREATE INDEX IF NOT EXISTS grants_browser ON grants(browser_id);
 CREATE INDEX IF NOT EXISTS tokens_grant ON tokens(grant_id);
 CREATE INDEX IF NOT EXISTS codes_grant ON codes(grant_id);
 CREATE INDEX IF NOT EXISTS authorizations_browser ON authorizations(browser_id);
-PRAGMA user_version = 1;
 `)
 	if err != nil {
 		db.Close()
 		return nil, err
+	}
+	var version int
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if version > 3 {
+		db.Close()
+		return nil, errors.New("pairing database schema is newer than this server")
+	}
+	if version < 1 {
+		if _, err = db.Exec("PRAGMA user_version = 1"); err != nil {
+			db.Close()
+			return nil, err
+		}
+		version = 1
+	}
+	if version < 2 {
+		tx, txErr := db.Begin()
+		if txErr != nil {
+			db.Close()
+			return nil, txErr
+		}
+		_, err = tx.Exec(`
+CREATE TABLE IF NOT EXISTS export_jobs (
+ id TEXT PRIMARY KEY, browser_id TEXT NOT NULL, grant_id TEXT NOT NULL,
+ request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, kind TEXT NOT NULL,
+ status TEXT NOT NULL, source_id TEXT NOT NULL DEFAULT '', source_revision INTEGER, format TEXT NOT NULL DEFAULT 'svg',
+ include_trash INTEGER NOT NULL DEFAULT 1, object_key TEXT NOT NULL UNIQUE,
+ filename TEXT NOT NULL DEFAULT '', mime_type TEXT NOT NULL DEFAULT '',
+ byte_length INTEGER NOT NULL DEFAULT 0, sha256 TEXT NOT NULL DEFAULT '', diagram_count INTEGER NOT NULL DEFAULT 0, snapshot_at INTEGER NOT NULL DEFAULT 0,
+ upload_url TEXT NOT NULL DEFAULT '', upload_headers TEXT NOT NULL DEFAULT '', upload_expires INTEGER NOT NULL DEFAULT 0,
+ manifest TEXT NOT NULL DEFAULT '',
+ created INTEGER NOT NULL, deadline INTEGER NOT NULL, receipt_expires INTEGER NOT NULL,
+ link_expires INTEGER NOT NULL DEFAULT 0, failure TEXT NOT NULL DEFAULT '',
+ UNIQUE(browser_id, grant_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS export_jobs_expiry ON export_jobs(receipt_expires);
+CREATE INDEX IF NOT EXISTS export_jobs_owner ON export_jobs(browser_id, grant_id, created);
+CREATE TABLE IF NOT EXISTS export_usage (
+ day TEXT NOT NULL, scope TEXT NOT NULL, scope_id TEXT NOT NULL,
+ attempts INTEGER NOT NULL DEFAULT 0, bytes INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(day, scope, scope_id)
+);
+`)
+		if err == nil {
+			_, err = tx.Exec("PRAGMA user_version = 2")
+		}
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if version < 3 {
+		tx, txErr := db.Begin()
+		if txErr != nil {
+			db.Close()
+			return nil, txErr
+		}
+		_, err = tx.Exec(`
+ALTER TABLE export_jobs ADD COLUMN verification_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE export_jobs ADD COLUMN verify_after INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 3;
+`)
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	if _, err = db.Exec("INSERT OR IGNORE INTO settings VALUES ('issuer', ?)", issuer); err != nil {
 		db.Close()
@@ -126,6 +203,10 @@ PRAGMA user_version = 1;
 
 func (s *Server) pruneIdentities() {
 	now := time.Now().Unix()
+	_, _ = s.db.Exec(`UPDATE export_jobs SET status='expired',failure='expired',upload_url='',upload_headers='' WHERE status IN ('queued','preparing','uploading','verifying','ready') AND (CASE WHEN status='ready' THEN link_expires ELSE deadline END) <= ?`, now)
+	_, _ = s.db.Exec(`DELETE FROM export_jobs WHERE receipt_expires <= ?`, now)
+	day := time.Now().UTC().Add(-7 * 24 * time.Hour).Format("2006-01-02")
+	_, _ = s.db.Exec(`DELETE FROM export_usage WHERE day < ?`, day)
 	// Expired records are removed on startup and hourly, without tracking IPs.
 	for _, q := range []string{
 		"DELETE FROM browsers WHERE expires <= ?",

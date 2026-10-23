@@ -22,22 +22,24 @@ type toolError struct {
 func (e *toolError) Error() string { return e.Message }
 
 type bridgeMessage struct {
-	Type      string          `json:"type"`
-	ID        string          `json:"id,omitempty"`
-	DiagramID string          `json:"diagramId,omitempty"`
-	Tool      string          `json:"tool,omitempty"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Deadline  int64           `json:"deadline,omitempty"`
-	Result    json.RawMessage `json:"result,omitempty"`
-	Error     *toolError      `json:"error,omitempty"`
+	Capabilities []string        `json:"capabilities,omitempty"`
+	Type         string          `json:"type"`
+	ID           string          `json:"id,omitempty"`
+	DiagramID    string          `json:"diagramId,omitempty"`
+	Tool         string          `json:"tool,omitempty"`
+	Arguments    json.RawMessage `json:"arguments,omitempty"`
+	Deadline     int64           `json:"deadline,omitempty"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Error        *toolError      `json:"error,omitempty"`
 }
 
 type peer struct {
-	conn      *websocket.Conn
-	diagramID string
-	browserID string
-	done      chan struct{}
-	pending   map[string]chan bridgeMessage
+	hostedExports bool
+	conn          *websocket.Conn
+	diagramID     string
+	browserID     string
+	done          chan struct{}
+	pending       map[string]chan bridgeMessage
 }
 
 // bridge retains connection metadata and in-flight requests, never diagram state.
@@ -134,6 +136,35 @@ func (b *bridge) call(ctx context.Context, browserID, tool string, args json.Raw
 	}
 }
 
+func (b *bridge) supportsHosted(browserID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p := b.active[browserID]
+	if p == nil {
+		return &toolError{"browser_unavailable", "Open the paired browser before starting a hosted export."}
+	}
+	if !p.hostedExports {
+		return &toolError{"unsupported_capability", "Refresh the paired browser to enable hosted exports."}
+	}
+	return nil
+}
+
+func (b *bridge) send(browserID, tool string, args json.RawMessage, deadline time.Time) error {
+	b.mu.Lock()
+	p := b.active[browserID]
+	b.mu.Unlock()
+	if p == nil {
+		return &toolError{"browser_unavailable", "Open the paired browser’s diagram app before using this tool."}
+	}
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return wsjson.Write(ctx, p.conn, bridgeMessage{Type: "command", ID: hex.EncodeToString(idBytes), Tool: tool, Arguments: args, Deadline: deadline.UnixMilli()})
+}
+
 func (s *Server) serveBridge(w http.ResponseWriter, r *http.Request) {
 	// Browser WebSockets must originate at an explicitly configured app origin.
 	if r.Header.Get("Origin") != s.config.PublicURL {
@@ -162,6 +193,11 @@ func (s *Server) serveBridge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := &peer{conn: conn, browserID: browser.ID, diagramID: hello.DiagramID, done: make(chan struct{}), pending: make(map[string]chan bridgeMessage)}
+	for _, capability := range hello.Capabilities {
+		if capability == "hosted_exports_v1" {
+			p.hostedExports = true
+		}
+	}
 	if !s.bridge.attach(p) {
 		_ = conn.Close(websocket.StatusTryAgainLater, "Waiting for the previous tab to disconnect.")
 		return

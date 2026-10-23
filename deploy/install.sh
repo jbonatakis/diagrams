@@ -29,8 +29,14 @@ test -r /etc/caddy/Caddyfile
 sudo -n install -d -o "$(id -un)" -g "$(id -gn)" -m 0755 "$app"
 tar -xzf "$archive" -C "$app"
 cd "$app"
-docker compose --env-file deploy/production.env.example config --quiet
-docker compose --env-file deploy/production.env.example up -d --build --wait --wait-timeout 120
+runtime_env=/etc/diagrams/runtime.env
+if ! test -f "$runtime_env"; then
+    sudo -n install -d -o root -g "$(id -gn)" -m 0750 /etc/diagrams
+    sudo -n install -o root -g "$(id -gn)" -m 0640 deploy/production.env.example "$runtime_env"
+fi
+compose=(docker compose --env-file "$runtime_env")
+"${compose[@]}" config --quiet
+"${compose[@]}" up -d --build --wait --wait-timeout 120
 curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8788/healthz
 
 sudo -n install -d -m 0755 /etc/caddy/sites
@@ -49,6 +55,6 @@ unset adapted
 sudo -n systemctl reload caddy
 reloaded=true
 curl --fail --silent --show-error --retry 12 --retry-delay 5 --retry-all-errors --max-time 10 https://diagrams.bonatak.is/healthz
-docker compose --env-file deploy/production.env.example ps
-docker stats --no-stream "$(docker compose --env-file deploy/production.env.example ps -q diagrams)"
+"${compose[@]}" ps
+docker stats --no-stream "$("${compose[@]}" ps -q diagrams)"
 echo 'Diagrams is live at https://diagrams.bonatak.is'

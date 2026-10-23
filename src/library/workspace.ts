@@ -4,7 +4,8 @@ import { DiagramController } from '../editor/controller';
 import { CommandError, validateArguments, type ApplyArguments, type Command, type DeleteDiagramTarget, type InsertCustomShapeArguments, type ViewArguments } from '../protocol';
 import { DiagramStorage, storageError } from './storage';
 import { Transfers } from './transfers';
-import { byteLength, diagramName, emptyScene, exportDiagram, MAX_DOCUMENT_BYTES, MAX_LIBRARY_BYTES, parseJSON, parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene } from './scene';
+import { HostedExports, type HostedJob, type HostedSnapshot } from './hosted-exports';
+import { byteLength, diagramName, emptyScene, exportDiagram, exportDiagramBlob, MAX_DOCUMENT_BYTES, MAX_LIBRARY_BYTES, parseJSON, parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene } from './scene';
 
 const makeDiagram = (name: string, scene = emptyScene()): Diagram => {
   const now = new Date().toISOString();
@@ -34,6 +35,7 @@ export class Workspace {
   private saving?: Promise<void>;
   private queue: Promise<unknown> = Promise.resolve();
   private transfers = new Transfers();
+  private hostedExports = new HostedExports((job, signal) => this.captureHostedExport(job, signal));
   private status: SaveStatus = 'saved';
   private error = '';
   private busy = false;
@@ -167,6 +169,7 @@ export class Workspace {
   }
 
   execute(request: Command): Promise<unknown> {
+    if (request.tool === '__cancel_hosted_export' || request.tool === '__hosted_export_job') return Promise.resolve(this.hostedExports.execute(request));
     const execute = async () => {
       let command = request;
       if (Date.now() > command.deadline) throw new CommandError('expired_request', 'Request expired. Inspect the library before retrying.');
@@ -210,6 +213,28 @@ export class Workspace {
       finally { if (mutating) { this.busy = false; this.notify(); } }
     };
     return this.enqueue(execute);
+  }
+
+  private captureHostedExport(job: HostedJob, signal: AbortSignal): Promise<HostedSnapshot> {
+    return this.enqueue(async () => {
+      signal.throwIfAborted();
+      if (Date.now() >= job.deadline) throw new CommandError('export_timeout', 'Export expired before capture.');
+      if (job.kind === 'diagram') {
+        const diagram = await this.get(job.diagramId);
+        return { metadata: { revision: diagram.revision }, render: () => exportDiagramBlob(diagram, job.format as 'svg' | 'png' | 'excalidraw') };
+      }
+      // Capture the live scene before awaiting storage, then overlay it on one
+      // consistent read transaction. Saving is not a prerequisite for export.
+      const active = this.current();
+      const snapshotAt = new Date().toISOString();
+      const diagrams = await this.storage.snapshot(job.includeTrash, active);
+      const metadata = { diagramCount: diagrams.length, snapshotAt, sourceRevisions: diagrams.map(item => ({ diagramId: item.id, revision: item.revision })) };
+      return { metadata, render: async () => {
+        const blob = new Blob([JSON.stringify({ type: 'diagrams-library', version: 1, exportedAt: snapshotAt, diagrams: diagrams.map(item => ({ id: item.id, name: item.name, deletedAt: item.deletedAt, document: sceneFile(item.scene) })) })], { type: 'application/json' });
+        if (blob.size > MAX_LIBRARY_BYTES) throw new CommandError('library_too_large', 'This library exceeds the 64 MiB backup limit.');
+        return { filename: 'diagrams-library.json', mimeType: 'application/json', blob };
+      } };
+    });
   }
 
   private enqueue<T>(execute: () => Promise<T>): Promise<T> {
@@ -285,6 +310,7 @@ export class Workspace {
     if (tool === 'begin_import') return this.transfers.begin(args.kind);
     if (tool === 'write_import_chunk') return this.transfers.append(args.uploadId, args.offset, args.data);
     // Exports also work when saving has failed, so a user can rescue the live canvas.
+    if ((tool === 'export_diagram' || tool === 'export_library') && args.delivery === 'download') throw new CommandError('hosted_exports_unavailable', 'Start hosted exports through the connected agent.');
     if (tool === 'export_diagram') {
       const diagram = await this.get(args.diagramId);
       return { diagramId: diagram.id, revision: diagram.revision, ...this.transfers.export(await exportDiagram(diagram, args.format ?? 'excalidraw')) };
@@ -385,7 +411,7 @@ export class Workspace {
 
   async retrySave() { await this.flush(); }
   dismissError() { this.error = ''; this.notify(); }
-  dispose() { clearTimeout(this.timer); clearTimeout(this.maxTimer); this.controller?.dispose(); this.storage.close(); this.transfers.dispose(); this.release(); }
+  dispose() { clearTimeout(this.timer); clearTimeout(this.maxTimer); this.controller?.dispose(); this.storage.close(); this.transfers.dispose(); this.hostedExports.dispose(); this.release(); }
 }
 
 let opening: Promise<Workspace> | undefined;

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,6 +31,13 @@ func main() {
 		PublicURL:    env("DIAGRAMS_PUBLIC_URL", "http://localhost:5173"),
 		DatabasePath: env("DIAGRAMS_DB", "data/pairings.db"),
 		StaticDir:    env("DIAGRAMS_STATIC_DIR", "dist"),
+		R2Enabled:    env("DIAGRAMS_R2_ENABLED", "false") == "true",
+		R2Verified:   env("DIAGRAMS_R2_ENFORCEMENT_VERIFIED", "false") == "true",
+		R2Endpoint:   env("DIAGRAMS_R2_ENDPOINT", ""),
+		R2Bucket:     env("DIAGRAMS_R2_BUCKET", ""),
+		R2AccessKey:  env("DIAGRAMS_R2_ACCESS_KEY_ID", ""),
+		R2SecretKey:  secretFile("DIAGRAMS_R2_SECRET_ACCESS_KEY_FILE"),
+		DownloadKey:  secretFileBytes("DIAGRAMS_DOWNLOAD_SIGNING_KEY_FILE"),
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -97,4 +105,18 @@ func env(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func secretFile(key string) string { return strings.TrimSpace(string(secretFileBytes(key))) }
+func secretFileBytes(key string) []byte {
+	path := os.Getenv(key)
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("secret file %s could not be read; hosted exports will remain disabled", key)
+		return nil
+	}
+	return data
 }

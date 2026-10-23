@@ -9,6 +9,8 @@ const target = process.env.DIAGRAMS_SSH_TARGET ?? 'deploy@46.225.76.155';
 if (!/^[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+$/.test(target)) throw new Error('Invalid DIAGRAMS_SSH_TARGET');
 const bundleOnly = process.argv.includes('--bundle-only');
 const update = process.argv.includes('--update');
+const migrateExports = process.argv.includes('--migrate-hosted-exports');
+if (migrateExports && !update) throw new Error('--migrate-hosted-exports requires --update');
 const archive = resolve('.cache/diagrams-deploy.tar.gz');
 mkdirSync('.cache', { recursive: true });
 const log = bundleOnly ? undefined : createWriteStream('.cache/deploy.log', { mode: 0o600 });
@@ -42,7 +44,8 @@ try {
     const sshOptions = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10'];
     output(`${update ? 'Updating' : 'Installing'} diagrams.bonatak.is on ${target}.\n`);
     await run('scp', [...sshOptions, archive, `${target}:${remoteArchive}`]);
-    await run('ssh', [...sshOptions, target, 'bash', '-s', '--', remoteArchive], readFileSync(update ? 'deploy/update.sh' : 'deploy/install.sh'));
+    await run('ssh', [...sshOptions, target, 'bash', '-s', '--', remoteArchive,
+      ...(migrateExports ? ['--migrate-hosted-exports'] : [])], readFileSync(update ? 'deploy/update.sh' : 'deploy/install.sh'));
     output('\nVerifying OAuth and visitor isolation over public HTTPS.\n');
     await run('npm', ['test', '--', 'tests/connections.spec.ts', 'tests/phase-one.spec.ts',
       '--grep', 'pairing survives reload|independent visitors'], undefined,

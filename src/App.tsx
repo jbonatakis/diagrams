@@ -4,6 +4,7 @@ import { DefaultSidebar, Excalidraw, MainMenu, WelcomeScreen } from '@excalidraw
 import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { useAgentConnection, AgentConnectionPanel } from './connection';
 import { openWorkspace, type Workspace } from './library/workspace';
+import type { HostedNotice } from './library/hosted-exports';
 import { LibraryPanel, DiagramActions, download, importFile } from './library/ui';
 import type { DiagramMeta } from './library/scene';
 import { CanvasSearch, SearchIcon } from './editor/CanvasSearch';
@@ -56,6 +57,7 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [uiError, setUIError] = useState('');
   const [notice, setNotice] = useState('');
+  const [hostedNotices, setHostedNotices] = useState<HostedNotice[]>([]);
   const [working, setWorking] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const titleInput = useRef<HTMLInputElement>(null);
@@ -100,6 +102,18 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     return () => { window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('visibilitychange', flush); };
   }, [workspace]);
 
+  useEffect(() => {
+    const update = (event: Event) => {
+      const detail = (event as CustomEvent<HostedNotice>).detail;
+      setHostedNotices(previous => {
+        const remaining = previous.filter(item => item.exportId !== detail.exportId);
+        return detail.status === 'ready' ? remaining : [...remaining, detail].slice(-4);
+      });
+    };
+    window.addEventListener('diagrams-hosted-export', update);
+    return () => window.removeEventListener('diagrams-hosted-export', update);
+  }, []);
+
   return <div className="app-shell">
     <header className="app-header">
       <a className="brand" href="/" aria-label="Diagrams home" onClick={(event) => event.preventDefault()}><span className="brand-mark"><Mark /></span>Diagrams<span className="phase-label">LAB</span></a>
@@ -131,6 +145,10 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     }} />
     {(uiError || state.error) && <div className="workspace-error" role="alert"><span>{uiError || state.error}</span>{state.saveStatus === 'error' && <button onClick={() => void act(() => workspace.retrySave())}>Retry saving</button>}<button aria-label="Dismiss error" onClick={() => { setUIError(''); workspace.dismissError(); }}>×</button></div>}
     {notice && <div className="workspace-notice" role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice('')}>×</button></div>}
+    {hostedNotices.filter(item => item.status !== 'ready').map(hostedNotice => <div key={hostedNotice.exportId} className="workspace-notice hosted-export-notice" role="status" aria-live="polite">
+      <span>{hostedNotice.status === 'preparing' ? 'Preparing hosted export…' : hostedNotice.status === 'uploading' ? 'Uploading export to temporary Cloudflare R2 storage…' : hostedNotice.status === 'verifying' ? 'Verifying hosted export…' : hostedNotice.status === 'cancelled' ? 'Export cancelled.' : 'Hosted export failed.'}</span>
+      <button aria-label="Dismiss hosted export notice" onClick={() => setHostedNotices(previous => previous.filter(item => item.exportId !== hostedNotice.exportId))}>×</button>
+    </div>)}
     {shapeState.error && <div className="workspace-error" role="alert"><span>{shapeState.error}</span><button onClick={() => void workspace.customShapes.flush().catch(() => {})}>Retry saving custom shapes</button></div>}
     <CustomShapeInstaller workspace={workspace} onNotice={setNotice} />
     <main className="workspace">

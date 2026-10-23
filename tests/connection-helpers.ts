@@ -59,12 +59,15 @@ export async function authorizeAgent(page: Page, name = 'Browser test agent', al
     await consent.goto(authorization.toString());
     await expect(consent.getByRole('heading', { name: 'Connect this agent?' })).toBeVisible();
     const [approval] = await Promise.all([
-      consent.waitForResponse(response => response.url() === origin + '/oauth/approve'),
+      // WebKit can omit the intermediate redirect response when the loopback
+      // callback is intercepted. Verify the POST and callback state instead.
+      consent.waitForRequest(request => request.url() === origin + '/oauth/approve' && request.method() === 'POST', { timeout: 8_000 }),
       consent.getByRole('button', { name: allow ? 'Allow access' : 'Cancel', exact: true }).click(),
     ]);
-    expect(approval.status(), 'OAuth consent should redirect to the agent').toBe(303);
-    expect(approval.request().headers().origin).toBe(origin);
-    await consent.waitForURL(callback + '**', { timeout: 8_000 });
+    expect(approval.headers().origin).toBe(origin);
+    // Only the committed callback URL is needed. Firefox may not emit a load
+    // event for this intercepted loopback redirect after the URL has changed.
+    await consent.waitForURL(callback + '**', { timeout: 8_000, waitUntil: 'commit' });
     const result = new URL(consent.url());
     expect(result.searchParams.get('state')).toBe(state);
     expect(result.searchParams.get('iss')).toBe(origin);

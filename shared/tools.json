@@ -1290,7 +1290,7 @@
     }
   },
   "export_diagram": {
-    "description": "Export a saved or active diagram as editable excalidraw JSON, SVG, or PNG. Returns filename, mimeType, encoding (utf8/base64), sizeBytes, revision, artifactId, first data chunk and nextOffset. Read remaining chunks using read_export, concatenate data, then decode base64 for PNG. Artifacts expire after 5 minutes and stay only in browser memory. Export also works for an unsaved active canvas.",
+    "description": "Export a saved or active diagram as editable excalidraw JSON, SVG, or PNG. Prefer svg for scalable diagrams and GitHub README images; prefer png for inline image sharing in chat apps such as Slack. Use excalidraw for editable backups. delivery defaults to chunks (excalidraw by default), which returns browser-memory chunks via read_export. Use delivery=download for a temporary hosted link (SVG by default); this copies the export to Cloudflare R2 and the link expires after 15 minutes. The connected browser must stay open until upload completes. Hosted exports cover the full canvas; for a subset, create a separate diagram containing those elements, then export it. delivery=download requires a fresh UUID requestId; retry with the same ID and arguments, then poll get_export until ready.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -1306,24 +1306,94 @@
             "svg",
             "png"
           ]
+        },
+        "delivery": {
+          "enum": [
+            "chunks",
+            "download"
+          ]
+        },
+        "requestId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         }
       },
       "required": [
         "diagramId"
-      ]
+      ],
+      "if": {
+        "properties": {
+          "delivery": {
+            "const": "download"
+          }
+        },
+        "required": [
+          "delivery"
+        ]
+      },
+      "then": {
+        "required": [
+          "requestId"
+        ]
+      }
     }
   },
   "export_library": {
-    "description": "Back up the browser diagram library as versioned JSON, including trash by default. Returns a UTF-8 export artifact and first chunk; use read_export until nextOffset is null. Maximum backup is 100 diagrams / 64 MB. Diagrams are never saved on the server.",
+    "description": "Back up the browser diagram library as versioned JSON, including trash by default. delivery defaults to chunks and returns a browser-memory transfer; use delivery=download for a temporary hosted R2 link. Download links expire after 15 minutes. The connected browser must stay open until upload completes. Maximum backup is 100 diagrams / 64 MB. delivery=download requires a fresh UUID requestId; retry with the same ID and arguments, then poll get_export until ready.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "includeTrash": {
           "type": "boolean"
+        },
+        "delivery": {
+          "enum": [
+            "chunks",
+            "download"
+          ]
+        },
+        "requestId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
         }
       },
-      "required": []
+      "required": [],
+      "if": {
+        "properties": {
+          "delivery": {
+            "const": "download"
+          }
+        },
+        "required": [
+          "delivery"
+        ]
+      },
+      "then": {
+        "required": [
+          "requestId"
+        ]
+      }
+    }
+  },
+  "get_export": {
+    "description": "Check the status of a hosted diagram or library export. If ready, returns the same temporary download link and file metadata. Works after the browser closes.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "exportId": { "type": "string", "pattern": "^exp_[A-Za-z0-9_-]{16,80}$" } },
+      "required": ["exportId"]
+    }
+  },
+  "cancel_export": {
+    "description": "Cancel a pending hosted export or withdraw its download link. Existing R2 upload URLs may remain valid until they expire.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "exportId": { "type": "string", "pattern": "^exp_[A-Za-z0-9_-]{16,80}$" } },
+      "required": ["exportId"]
     }
   },
   "read_export": {

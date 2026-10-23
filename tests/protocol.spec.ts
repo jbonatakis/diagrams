@@ -101,3 +101,14 @@ test('every native endpoint marker is accepted on lines, connections and direct 
   expect(message).toContain('crowfoot_many'); expect(message).toContain('circle_outline');
   expect(message).not.toContain('fromId');
 });
+
+test('hosted exports require retry IDs while legacy chunked requests stay valid', () => {
+  for (const name of ['export_diagram', 'export_library']) {
+    const base = name === 'export_diagram' ? { diagramId: 'diagram' } : {};
+    expect(() => validateArguments(name, base)).not.toThrow();
+    expect(() => validateArguments(name, { ...base, delivery: 'chunks' })).not.toThrow();
+    expect(invalid(name, { ...base, delivery: 'download' })).toContain('requestId');
+    expect(() => validateArguments(name, { ...base, delivery: 'download', requestId: '28cfadca-2579-4afc-9596-1aa3a5cb428d' })).not.toThrow();
+    expect(invalid(name, { ...base, delivery: 'download', requestId: 'not-a-uuid' })).toContain('requestId');
+  }
+});

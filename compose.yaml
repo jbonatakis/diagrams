@@ -11,10 +11,20 @@ services:
       DIAGRAMS_DB: /data/pairings.db
       DIAGRAMS_STATIC_DIR: /app/dist
       GOMEMLIMIT: 192MiB
+      DIAGRAMS_R2_ENABLED: ${DIAGRAMS_R2_ENABLED:-false}
+      DIAGRAMS_R2_ENFORCEMENT_VERIFIED: ${DIAGRAMS_R2_ENFORCEMENT_VERIFIED:-false}
+      DIAGRAMS_R2_ENDPOINT: ${DIAGRAMS_R2_ENDPOINT:-}
+      DIAGRAMS_R2_BUCKET: ${DIAGRAMS_R2_BUCKET:-}
+      DIAGRAMS_R2_ACCESS_KEY_ID: ${DIAGRAMS_R2_ACCESS_KEY_ID:-}
+      DIAGRAMS_R2_SECRET_ACCESS_KEY_FILE: /run/secrets/r2_secret_access_key
+      DIAGRAMS_DOWNLOAD_SIGNING_KEY_FILE: /run/secrets/download_signing_key
     ports:
       - "127.0.0.1:${DIAGRAMS_PORT:-8788}:8080"
     volumes:
       - pairings:/data
+    secrets:
+      - r2_secret_access_key
+      - download_signing_key
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777,noexec,nosuid
@@ -33,3 +43,9 @@ services:
 
 volumes:
   pairings:
+
+secrets:
+  r2_secret_access_key:
+    file: ${DIAGRAMS_R2_SECRET_ACCESS_KEY_FILE:-./deploy/empty-secret}
+  download_signing_key:
+    file: ${DIAGRAMS_DOWNLOAD_SIGNING_KEY_FILE:-./deploy/empty-secret}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,13 @@ type Config struct {
 	DatabasePath   string
 	StaticDir      string
 	CommandTimeout time.Duration
+	R2Endpoint     string
+	R2Bucket       string
+	R2AccessKey    string
+	R2SecretKey    string
+	DownloadKey    []byte
+	R2Enabled      bool
+	R2Verified     bool
 }
 
 type Server struct {
@@ -35,6 +43,7 @@ type Server struct {
 	closeOnce sync.Once
 	bridge    bridge
 	mux       *http.ServeMux
+	exports   *hostedExports
 }
 
 func New(config Config) (*Server, error) {
@@ -51,8 +60,20 @@ func New(config Config) (*Server, error) {
 		config.CommandTimeout = 10 * time.Second
 	}
 	s := &Server{config: config, db: db, mux: http.NewServeMux(), stop: make(chan struct{}), done: make(chan struct{})}
+	if config.R2Enabled || config.R2Verified {
+		if !config.R2Verified || len(config.DownloadKey) < 32 {
+			log.Print("hosted exports remain disabled until R2 enforcement is verified and a download signing key is configured")
+		} else {
+			storage, storageErr := newR2Storage(config.R2Endpoint, config.R2Bucket, config.R2AccessKey, config.R2SecretKey)
+			if storageErr != nil {
+				log.Print("hosted exports remain disabled because the R2 configuration is incomplete")
+			} else {
+				s.exports = &hostedExports{server: s, storage: storage, key: append([]byte(nil), config.DownloadKey...), creationDisabled: !config.R2Enabled}
+			}
+		}
+	}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "diagrams", Version: "0.1.0"}, &mcp.ServerOptions{
-		Instructions: "Manage the connected browser's local diagram library. Discover imported templates with list_custom_shapes (includes names when available). Use preview_custom_shapes to inspect icons before inserting with insert_custom_shape. create_shape only makes rectangles, ellipses and diamonds. Call get_diagram before edits; pass its diagramId and revision. List before opening or managing diagrams. Edits autosave to browser IndexedDB, never the server. Use a fresh requestId for each edit batch; retry only with identical arguments and ID. Preview diagrams to inspect layout. fit_canvas changes the browser viewport. A batch is one undo step; switching diagrams clears undo. Import/export tools support chunked files in browser memory. Never blindly retry a timed-out write: inspect the diagram/library first. The browser must stay connected.",
+		Instructions: "Manage the connected browser's local diagram library. Discover imported templates with list_custom_shapes (includes names when available). Use preview_custom_shapes to inspect icons before inserting with insert_custom_shape. create_shape only makes rectangles, ellipses and diamonds. Call get_diagram before edits; pass its diagramId and revision. List before opening or managing diagrams. Edits autosave to browser IndexedDB, never the server. Use a fresh requestId for each edit batch; retry only with identical arguments and ID. Preview diagrams to inspect layout. fit_canvas changes the browser viewport. A batch is one undo step; switching diagrams clears undo. Import/export tools support chunked files in browser memory; hosted exports upload directly to temporary Cloudflare R2 storage when enabled. Never blindly retry a timed-out write: inspect the diagram/library first. The browser must stay connected.",
 	})
 	var definitions map[string]struct {
 		Description string          `json:"description"`
@@ -61,11 +82,11 @@ func New(config Config) (*Server, error) {
 	if err := json.Unmarshal(shared.ToolsJSON, &definitions); err != nil {
 		panic(err)
 	}
-	closedWorld := false
 	for name, definition := range definitions {
+		openWorld := name == "export_diagram" || name == "export_library"
 		mcpServer.AddTool(&mcp.Tool{
 			Name: name, Description: definition.Description, InputSchema: definition.InputSchema,
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "list_custom_shapes" || name == "preview_custom_shapes" || name == "export_diagram" || name == "export_library" || name == "read_export" || name == "preview_diagram", OpenWorldHint: &closedWorld},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "list_custom_shapes" || name == "preview_custom_shapes" || name == "get_export" || name == "read_export" || name == "preview_diagram", OpenWorldHint: &openWorld},
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.Params.Arguments
 			if len(args) == 0 {
@@ -73,6 +94,38 @@ func New(config Config) (*Server, error) {
 			}
 			if req.Extra == nil || req.Extra.TokenInfo == nil {
 				return nil, fmt.Errorf("missing authorization context")
+			}
+			var input map[string]any
+			if name == "export_diagram" || name == "export_library" || name == "get_export" || name == "cancel_export" {
+				if err := json.Unmarshal(args, &input); err != nil {
+					return nil, err
+				}
+				if input["delivery"] == "download" || name == "get_export" || name == "cancel_export" {
+					if s.exports == nil {
+						return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: `{"code":"hosted_exports_unavailable","message":"Hosted exports are not configured; use the local chunked export instead."}`}}}, nil
+					}
+					grant, _ := req.Extra.TokenInfo.Extra["grant"].(string)
+					var result *mcp.CallToolResult
+					var err error
+					if name == "get_export" || name == "cancel_export" {
+						result, err = s.exports.agentTool(ctx, req.Extra.TokenInfo.UserID, grant, name, input)
+					} else {
+						result, err = s.exports.start(ctx, req.Extra.TokenInfo.UserID, grant, name, input)
+					}
+					if err != nil {
+						data, _ := json.Marshal(publicError(err))
+						return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: string(data)}}}, nil
+					}
+					return result, nil
+				}
+				// Legacy browsers do not know the hosted-only arguments.
+				delete(input, "delivery")
+				delete(input, "requestId")
+				var err error
+				args, err = json.Marshal(input)
+				if err != nil {
+					return nil, err
+				}
 			}
 			result, err := s.bridge.call(ctx, req.Extra.TokenInfo.UserID, name, args, s.config.CommandTimeout)
 			if err != nil {
@@ -99,6 +152,16 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("POST /api/forget", s.forgetBrowser)
 	s.mux.HandleFunc("GET /api/bridge", s.serveBridge)
 	s.mux.HandleFunc("GET /healthz", s.health)
+	if s.exports != nil {
+		s.exports.routes(s.mux)
+	} else {
+		notFound := func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "Not found", http.StatusNotFound) }
+		s.mux.HandleFunc("GET /export/{id}", notFound)
+		s.mux.HandleFunc("POST /api/exports/{id}/captured", notFound)
+		s.mux.HandleFunc("POST /api/exports/{id}/upload", notFound)
+		s.mux.HandleFunc("POST /api/exports/{id}/complete", notFound)
+		s.mux.HandleFunc("POST /api/exports/{id}/failed", notFound)
+	}
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	if config.StaticDir != "" {
 		files := http.FileServer(http.Dir(config.StaticDir))
@@ -127,6 +190,12 @@ func New(config Config) (*Server, error) {
 		})
 	}
 	s.pruneIdentities()
+	if s.exports != nil {
+		if err := s.exports.startWorker(); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	go func() {
 		defer close(s.done)
 		ticker := time.NewTicker(time.Hour)
@@ -182,7 +251,15 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) Close() {
-	s.closeOnce.Do(func() { close(s.stop); <-s.done; s.bridge.close(); _ = s.db.Close() })
+	s.closeOnce.Do(func() {
+		close(s.stop)
+		<-s.done
+		s.bridge.close()
+		if s.exports != nil {
+			s.exports.close()
+		}
+		_ = s.db.Close()
+	})
 }
 
 func (s *Server) authenticate(next http.Handler) http.Handler {

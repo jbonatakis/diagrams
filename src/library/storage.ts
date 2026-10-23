@@ -59,6 +59,34 @@ export class DiagramStorage {
     catch { throw new CommandError('corrupt_diagram', 'This saved diagram could not be read. Use Recover previous save in the library, or import a backup.'); }
   }
 
+  async snapshot(includeTrash: boolean, active: Diagram): Promise<Diagram[]> {
+    const tx = this.db.transaction(['diagrams', 'scenes']);
+    const done = completed(tx);
+    try {
+      const metas: DiagramMeta[] = await request(tx.objectStore('diagrams').getAll());
+      const included = metas.filter(meta => includeTrash || !meta.deletedAt);
+      if (!included.length || included.length > 100) throw new CommandError('library_too_large', 'Library backups support 1–100 diagrams.');
+      const diagrams: Diagram[] = [];
+      let bytes = 0;
+      for (const meta of included) {
+        const raw = meta.id === active.id ? sceneFile(active.scene) : await request(tx.objectStore('scenes').get(meta.id));
+        bytes += jsonBytes(raw);
+        if (bytes > 64 * 1024 * 1024) throw new CommandError('library_too_large', 'This library exceeds the 64 MiB backup limit.');
+        if (meta.id === active.id) diagrams.push(active);
+        else {
+          try { diagrams.push({ ...meta, scene: parseScene(raw) }); }
+          catch { throw new CommandError('corrupt_diagram', 'A saved diagram could not be read. Recover it before backing up the library.'); }
+        }
+      }
+      await done;
+      return diagrams;
+    } catch (error) {
+      try { tx.abort(); } catch { /* The transaction may already be finished. */ }
+      await done.catch(() => {});
+      throw error;
+    }
+  }
+
   async previous(id: string): Promise<Scene> {
     const raw = await request(this.db.transaction('recovery').objectStore('recovery').get(id));
     if (!raw) throw new CommandError('no_recovery', 'There is no earlier saved version for this diagram.');

@@ -56,6 +56,7 @@ export class CommandError extends Error {
 }
 
 const ajv = new Ajv({ allErrors: true, strict: false });
+ajv.addFormat('uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const validators = Object.fromEntries(Object.entries(definitions).map(([name, tool]) => [name, ajv.compile(tool.inputSchema)]));
 const operationValidators = new Map(definitions.apply_operations.inputSchema.properties.operations.items.oneOf
   .map(schema => [schema.properties.op.const, ajv.compile(schema)]));
