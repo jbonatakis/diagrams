@@ -1,7 +1,7 @@
 import type { ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
 import { CustomShapes } from '../shapes/library';
 import { DiagramController } from '../editor/controller';
-import { CommandError, validateArguments, type ApplyArguments, type Command, type DeleteDiagramTarget, type ViewArguments } from '../protocol';
+import { CommandError, validateArguments, type ApplyArguments, type Command, type DeleteDiagramTarget, type InsertCustomShapeArguments, type ViewArguments } from '../protocol';
 import { DiagramStorage, storageError } from './storage';
 import { Transfers } from './transfers';
 import { byteLength, diagramName, emptyScene, exportDiagram, MAX_DOCUMENT_BYTES, MAX_LIBRARY_BYTES, parseJSON, parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene } from './scene';
@@ -166,10 +166,16 @@ export class Workspace {
     await ready;
   }
 
-  execute(command: Command): Promise<unknown> {
+  execute(request: Command): Promise<unknown> {
     const execute = async () => {
+      let command = request;
       if (Date.now() > command.deadline) throw new CommandError('expired_request', 'Request expired. Inspect the library before retrying.');
       validateArguments(command.tool, command.arguments);
+      // Both entry points use the same atomic edit, revision check and retry receipt.
+      if (command.tool === 'insert_custom_shape') {
+        const { shapeId, idPrefix, x, y, ...args } = command.arguments as InsertCustomShapeArguments;
+        command = { ...command, tool: 'apply_operations', arguments: { ...args, operations: [{ op: 'insert_custom_shape', shapeId, idPrefix, x, y }] } };
+      }
       if (!this.controller) throw new CommandError('editor_loading', 'The editor is still loading.');
       const tool = command.tool;
       if (tool === 'get_diagram') return { ...this.controller.snapshot(), name: this.active.name, saveStatus: this.status };
@@ -259,6 +265,7 @@ export class Workspace {
 
   private async perform(tool: string, args: Record<string, any>, deadline: number): Promise<unknown> {
     if (tool === 'list_custom_shapes') return this.customShapes.list(args.query, args.offset, args.limit);
+    if (tool === 'preview_custom_shapes') return this.customShapes.preview(args, deadline);
     if (tool === 'list_diagrams') {
       await this.flush().catch(() => {});
       return { activeDiagramId: this.active.id, activeRevision: this.controller!.revision, saveStatus: this.status, saveError: this.error || undefined,

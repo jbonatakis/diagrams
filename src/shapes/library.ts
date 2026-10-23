@@ -1,7 +1,8 @@
-import { getCommonBounds, loadLibraryFromBlob } from '@excalidraw/excalidraw';
+import { exportToCanvas, getCommonBounds, loadLibraryFromBlob } from '@excalidraw/excalidraw';
 import type { LibraryItems } from '@excalidraw/excalidraw/types';
 import type { PointBinding } from '@excalidraw/excalidraw/element/types';
-import { CommandError } from '../protocol';
+import { CommandError, type CustomShapePreviewArguments } from '../protocol';
+import { encodePreview } from '../editor/preview';
 import { byteLength, parseScene } from '../library/scene';
 import type { DiagramStorage } from '../library/storage';
 
@@ -128,11 +129,56 @@ export class CustomShapes {
     const all = this.items.map(item => {
       const [x1, y1, x2, y2] = getCommonBounds(item.elements);
       const text = item.elements.filter(element => element.type === 'text').map(element => element.originalText).join(' ').slice(0, 500);
+      const name = typeof item.name === 'string' ? item.name.slice(0, 500) : undefined;
       const types = [...new Set(item.elements.map(element => element.type))];
-      return { id: item.id, text, types, elementCount: item.elements.length, width: x2 - x1, height: y2 - y1 };
-    }).filter(item => `${item.id} ${item.text} ${item.types.join(' ')}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+      return { id: item.id, name, text, types, elementCount: item.elements.length, width: x2 - x1, height: y2 - y1 };
+    }).filter(item => `${item.id} ${item.name ?? ''} ${item.text} ${item.types.join(' ')}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
     return { shapes: all.slice(offset, offset + limit), total: all.length, nextOffset: offset + limit < all.length ? offset + limit : null,
       saveStatus: this.dirty ? 'unsaved' : 'saved', saveError: this.error || undefined };
+  }
+  async preview(args: CustomShapePreviewArguments, deadline: number) {
+    const page = this.list(args.query, args.offset, args.limit ?? 12);
+    if (args.shapeIds) {
+      const byId = new Map(this.list('', 0, this.items.length).shapes.map(shape => [shape.id, shape]));
+      page.shapes = args.shapeIds.map(id => {
+        const shape = byId.get(id);
+        if (!shape) throw new CommandError('shape_not_found', 'Custom shape not found. Call list_custom_shapes again.');
+        return shape;
+      });
+      page.total = page.shapes.length; page.nextOffset = null;
+    }
+    if (!page.shapes.length) throw new CommandError('no_custom_shapes', 'No custom shapes matched. Call list_custom_shapes to check installed shapes or try another query or offset.');
+    // Capture independent copies before awaiting font loading/rendering. Never
+    // insert into the editor or change the library to generate a preview.
+    const sources = page.shapes.map(shape => structuredClone(this.resolve(shape.id)));
+    const columns = Math.ceil(Math.sqrt(sources.length)), rows = Math.ceil(sources.length / columns);
+    const cell = Math.floor((args.maxSize ?? 1200) / Math.max(columns, rows));
+    const padding = Math.max(6, Math.round(cell * 0.04)), caption = Math.max(20, Math.round(cell * 0.1));
+    const availableWidth = cell - padding * 2, availableHeight = cell - caption - padding * 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = cell * columns; canvas.height = cell * rows;
+    const context = canvas.getContext('2d');
+    if (!context) throw new CommandError('preview_unavailable', 'This browser could not create a preview.');
+    context.fillStyle = '#ffffff'; context.fillRect(0, 0, canvas.width, canvas.height);
+    for (const [index, elements] of sources.entries()) {
+      if (Date.now() > deadline) throw new CommandError('expired_request', 'Preview expired. Request fewer custom shapes at once.');
+      const thumbnail = await exportToCanvas({ elements, files: {}, exportPadding: 10,
+        appState: { viewBackgroundColor: '#ffffff', exportBackground: true, exportWithDarkMode: false },
+        getDimensions: (width: number, height: number) => {
+          const scale = Math.min(availableWidth / width, availableHeight / height);
+          return { width: Math.max(1, Math.floor(width * scale)), height: Math.max(1, Math.floor(height * scale)), scale };
+        } });
+      const left = index % columns * cell, top = Math.floor(index / columns) * cell;
+      const scale = Math.min(availableWidth / thumbnail.width, availableHeight / thumbnail.height);
+      const width = thumbnail.width * scale, height = thumbnail.height * scale;
+      context.drawImage(thumbnail, left + (cell - width) / 2, top + caption + padding + (availableHeight - height) / 2, width, height);
+      context.strokeStyle = '#d9ded6'; context.strokeRect(left + 0.5, top + 0.5, cell - 1, cell - 1);
+      context.fillStyle = '#333333'; context.font = `600 ${Math.max(14, Math.round(caption * 0.65))}px sans-serif`;
+      context.textBaseline = 'top'; context.fillText(String(index + 1), left + padding, top + padding);
+    }
+    if (Date.now() > deadline) throw new CommandError('expired_request', 'Preview expired. Request fewer custom shapes at once.');
+    return { ...page, shapes: page.shapes.map((shape, index) => ({ ...shape, number: index + 1 })),
+      ...encodePreview(canvas) };
   }
   resolve(id: string) {
     const item = this.items.find(item => item.id === id);

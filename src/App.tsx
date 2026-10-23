@@ -179,6 +179,15 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
       {panelOpen && <AgentConnectionPanel connection={connection} onClose={() => setPanelOpen(false)} />}
     </main>
 
-    <footer className="app-footer"><span><span className="tiny-dot" />Canvas in your browser</span><span data-testid="scene-stats">{snapshot?.elements.length ?? 0} elements <span className="footer-separator">/</span> Revision {snapshot?.revision ?? 0}</span><span className="footer-hint">Space + drag to pan <span className="footer-separator">·</span> ⌘ / Ctrl + Z to undo</span></footer>
+    <footer className="app-footer">
+      <span><span className="tiny-dot" />Canvas in your browser</span>
+      <span data-testid="scene-stats">{snapshot?.elements.length ?? 0} elements <span className="footer-separator">/</span> Revision {snapshot?.revision ?? 0}</span>
+      <span className="footer-hint">Space + drag to pan <span className="footer-separator">·</span> ⌘ / Ctrl + Z to undo</span>
+      <nav className="footer-links" aria-label="Project links">
+        <a href="https://jack.bonatak.is" target="_blank" rel="noopener noreferrer">jack.bonatak.is</a>
+        <span className="footer-separator" aria-hidden="true">|</span>
+        <a href="https://github.com/jbonatakis/diagrams" target="_blank" rel="noopener noreferrer">github.com/jbonatakis/diagrams</a>
+      </nav>
+    </footer>
   </div>;
 }

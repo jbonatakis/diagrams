@@ -52,7 +52,7 @@ func New(config Config) (*Server, error) {
 	}
 	s := &Server{config: config, db: db, mux: http.NewServeMux(), stop: make(chan struct{}), done: make(chan struct{})}
 	mcpServer := mcp.NewServer(&mcp.Implementation{Name: "diagrams", Version: "0.1.0"}, &mcp.ServerOptions{
-		Instructions: "Manage the connected browser's local diagram library. Call get_diagram before edits; pass its diagramId and revision. List before opening or managing diagrams. Edits autosave to browser IndexedDB, never the server. Use a fresh requestId for each edit batch; retry only with identical arguments and ID. Preview diagrams to inspect layout. fit_canvas changes the browser viewport. A batch is one undo step; switching diagrams clears undo. Import/export tools support chunked files in browser memory. Never blindly retry a timed-out write: inspect the diagram/library first. The browser must stay connected.",
+		Instructions: "Manage the connected browser's local diagram library. Discover imported templates with list_custom_shapes (includes names when available). Use preview_custom_shapes to inspect icons before inserting with insert_custom_shape. create_shape only makes rectangles, ellipses and diamonds. Call get_diagram before edits; pass its diagramId and revision. List before opening or managing diagrams. Edits autosave to browser IndexedDB, never the server. Use a fresh requestId for each edit batch; retry only with identical arguments and ID. Preview diagrams to inspect layout. fit_canvas changes the browser viewport. A batch is one undo step; switching diagrams clears undo. Import/export tools support chunked files in browser memory. Never blindly retry a timed-out write: inspect the diagram/library first. The browser must stay connected.",
 	})
 	var definitions map[string]struct {
 		Description string          `json:"description"`
@@ -65,7 +65,7 @@ func New(config Config) (*Server, error) {
 	for name, definition := range definitions {
 		mcpServer.AddTool(&mcp.Tool{
 			Name: name, Description: definition.Description, InputSchema: definition.InputSchema,
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "list_custom_shapes" || name == "export_diagram" || name == "export_library" || name == "read_export" || name == "preview_diagram", OpenWorldHint: &closedWorld},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "list_custom_shapes" || name == "preview_custom_shapes" || name == "export_diagram" || name == "export_library" || name == "read_export" || name == "preview_diagram", OpenWorldHint: &closedWorld},
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.Params.Arguments
 			if len(args) == 0 {

@@ -21,7 +21,7 @@ func browserToolResult(tool string, raw json.RawMessage) *mcp.CallToolResult {
 	if json.Unmarshal(raw, &structured) != nil {
 		return invalid()
 	}
-	if tool != "preview_diagram" {
+	if tool != "preview_diagram" && tool != "preview_custom_shapes" {
 		return &mcp.CallToolResult{StructuredContent: structured, Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}}}
 	}
 	encoded, ok := structured["data"].(string)

@@ -131,10 +131,17 @@ kbd { font-family: inherit; font-size: 10px; border: 1px solid #dfe3d7; border-b
 .prototype-note p { font-size: 10px; line-height: 1.8; margin: 0; }
 .note-icon { border: 1px solid #b6bea8; border-radius: 50%; display: grid; place-items: center; width: 13px; height: 13px; flex-shrink: 0; margin-top: 3px; font-size: 9px; }
 .app-footer { height: 30px; border-top: 1px solid #dfe2d6; display: flex; gap: 24px; align-items: center; padding: 0 18px; flex-shrink: 0; font-size: 9px; color: #8a9380; }
-.app-footer > span { display: flex; gap: 7px; align-items: center; }
+.app-footer > span { display: flex; gap: 7px; align-items: center; white-space: nowrap; }
 .tiny-dot { width: 4px; height: 4px; border-radius: 50%; background: #a2af90; }
 .footer-separator { color: #c1c7b7; }
-.footer-hint { margin-left: auto; }
+.footer-links { display: flex; align-items: center; gap: 7px; margin-left: auto; white-space: nowrap; }
+.footer-links a { color: inherit; text-decoration: none; padding-block: 6px; }
+.footer-links a:hover, .footer-links a:focus-visible { color: #4e663d; text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 1050px) { .footer-hint { display: none !important; } }
+@media (max-width: 600px) {
+  .app-footer { height: auto; min-height: 30px; flex-wrap: wrap; justify-content: space-between; gap: 0 12px; padding: 4px 12px; }
+  .footer-links { flex-basis: 100%; justify-content: center; margin-left: 0; }
+}
 @media (max-width: 850px) { .memory-badge, .phase-label { display: none; } .app-header { padding-inline: 14px; gap: 12px; } .agent-panel { width: 290px; padding: 20px 17px; } .footer-hint { display: none !important; } }
 @media (max-width: 640px) { .document-title, .header-divider { display: none; } .app-header { height: 60px; } .brand { font-size: 17px; } .agent-panel { position: absolute; z-index: 10; right: 0; top: 0; bottom: 0; width: min(314px, 90vw); box-shadow: -5px 0 20px #334d2810; } .shortcut-row { gap: 10px; } .canvas-welcome { max-width: 280px; } .desktop-break { display: none; } }
 @media (prefers-reduced-motion: reduce) { .status-dot.pending, .connection-toggle.needs-setup { animation: none; } }

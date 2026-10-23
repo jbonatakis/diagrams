@@ -27,35 +27,46 @@ func previewFixture(t *testing.T) (map[string]any, []byte) {
 }
 
 func TestMCPPreviewReturnsNativeImageContent(t *testing.T) {
-	app, server := testServer(t, time.Second)
-	identity := newBrowser(t, server)
-	credentials := pair(t, app, server, identity)
-	client := mcpClient(t, server, credentials.Access)
-	browser := dialBrowser(t, server, identity, "preview")
-	readReady(t, browser)
-	fixture, expected := previewFixture(t)
-	raw, _ := json.Marshal(fixture)
-	go func() {
-		var message bridgeMessage
-		if wsjson.Read(context.Background(), browser, &message) != nil {
-			return
-		}
-		_ = wsjson.Write(context.Background(), browser, bridgeMessage{Type: "result", ID: message.ID, Result: raw})
-	}()
-	result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: "preview_diagram", Arguments: map[string]any{"diagramId": "preview"}})
-	if err != nil || result.IsError {
-		t.Fatalf("preview: %+v, %v", result, err)
-	}
-	if len(result.Content) != 2 {
-		t.Fatalf("expected metadata and image, got %d content blocks", len(result.Content))
-	}
-	content, ok := result.Content[1].(*mcp.ImageContent)
-	if !ok || content.MIMEType != "image/png" || !bytes.Equal(content.Data, expected) {
-		t.Fatal("MCP did not preserve image bytes")
-	}
-	metadata, _ := json.Marshal(result.StructuredContent)
-	if bytes.Contains(metadata, []byte(`"data"`)) || bytes.Contains([]byte(result.Content[0].(*mcp.TextContent).Text), []byte(fixture["data"].(string))) {
-		t.Fatal("image data was duplicated into text/metadata")
+	for _, tool := range []string{"preview_diagram", "preview_custom_shapes"} {
+		t.Run(tool, func(t *testing.T) {
+			app, server := testServer(t, time.Second)
+			identity := newBrowser(t, server)
+			credentials := pair(t, app, server, identity)
+			client := mcpClient(t, server, credentials.Access)
+			browser := dialBrowser(t, server, identity, "preview")
+			readReady(t, browser)
+			fixture, expected := previewFixture(t)
+			args := map[string]any{"diagramId": "preview"}
+			if tool == "preview_custom_shapes" {
+				args = map[string]any{"shapeIds": []string{"shape-one"}}
+				delete(fixture, "diagramId")
+				delete(fixture, "revision")
+				fixture["shapes"] = []map[string]any{{"number": 1, "id": "shape-one", "name": "Server"}}
+			}
+			raw, _ := json.Marshal(fixture)
+			go func() {
+				var message bridgeMessage
+				if wsjson.Read(context.Background(), browser, &message) != nil {
+					return
+				}
+				_ = wsjson.Write(context.Background(), browser, bridgeMessage{Type: "result", ID: message.ID, Result: raw})
+			}()
+			result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+			if err != nil || result.IsError {
+				t.Fatalf("preview: %+v, %v", result, err)
+			}
+			if len(result.Content) != 2 {
+				t.Fatalf("expected metadata and image, got %d content blocks", len(result.Content))
+			}
+			content, ok := result.Content[1].(*mcp.ImageContent)
+			if !ok || content.MIMEType != "image/png" || !bytes.Equal(content.Data, expected) {
+				t.Fatal("MCP did not preserve image bytes")
+			}
+			metadata, _ := json.Marshal(result.StructuredContent)
+			if bytes.Contains(metadata, []byte(`"data"`)) || bytes.Contains([]byte(result.Content[0].(*mcp.TextContent).Text), []byte(fixture["data"].(string))) {
+				t.Fatal("image data was duplicated into text/metadata")
+			}
+		})
 	}
 }
 
@@ -65,8 +76,10 @@ func TestInvalidBrowserPreviewsAreNotForwarded(t *testing.T) {
 			fixture, _ := previewFixture(t)
 			fixture[field] = "invalid"
 			raw, _ := json.Marshal(fixture)
-			if !browserToolResult("preview_diagram", raw).IsError {
-				t.Fatal("accepted invalid preview")
+			for _, tool := range []string{"preview_diagram", "preview_custom_shapes"} {
+				if !browserToolResult(tool, raw).IsError {
+					t.Fatalf("accepted invalid preview for %s", tool)
+				}
 			}
 		})
 	}

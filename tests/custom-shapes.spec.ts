@@ -168,13 +168,14 @@ test('catalog handoff preserves the open canvas and installs persist across relo
   client = await connectAgent(page);
   await page.getByRole('button', { name: 'Close agent panel' }).click();
   const original = await apply([{ op: 'create_text', id: 'keep', x: 100, y: 150, text: 'Keep my canvas' }]);
-  await mockLibrary(page, simpleFile());
+  const library = simpleFile();
+  await mockLibrary(page, { ...library, libraryItems: library.libraryItems.map(item => ({ ...item, name: 'Cloud Server' })) });
   await handoff(page);
   expect((await call('list_custom_shapes')).total).toBe(0); // Human confirmation is still required.
   await review(page).getByRole('button', { name: 'Add shapes', exact: true }).click();
   await expect(review(page)).toBeHidden();
   expect(await call('get_diagram')).toMatchObject({ diagramId: original.diagramId, elements: original.elements });
-  expect(await call('list_custom_shapes')).toMatchObject({ total: 1, saveStatus: 'saved', shapes: [{ id: 'plain-box', types: ['rectangle'], width: 120, height: 80 }] });
+  expect(await call('list_custom_shapes')).toMatchObject({ total: 1, saveStatus: 'saved', shapes: [{ id: 'plain-box', name: 'Cloud Server', text: '', types: ['rectangle'], width: 120, height: 80 }] });
   const browse = new URL(await page.locator('.library-menu-browse-button').getAttribute('href') as string);
   expect(new URL(browse.searchParams.get('referrer')!).searchParams.get('install')).toBe('custom-shapes');
   await install(page);
@@ -183,6 +184,7 @@ test('catalog handoff preserves the open canvas and installs persist across relo
   await call('open_diagram', { diagramId: created.id, expectedActiveDiagramId: original.diagramId, expectedActiveRevision: original.revision });
   expect((await call('list_custom_shapes')).total).toBe(1);
   await page.reload(); await readyCanvas(page, false);
+  expect(await call('list_custom_shapes', { query: 'cloud server' })).toMatchObject({ total: 1, shapes: [{ name: 'Cloud Server' }] });
   expect(await call('list_custom_shapes', { query: 'rectangle', limit: 1 })).toMatchObject({ total: 1, nextOffset: null });
   expect(await call('list_custom_shapes', { query: 'missing' })).toMatchObject({ total: 0 });
   await page.getByRole('button', { name: 'Close agent panel' }).click();
@@ -190,8 +192,69 @@ test('catalog handoff preserves the open canvas and installs persist across relo
   await expect(page.locator('.library-menu-items-container .library-unit__active')).toHaveCount(1);
 });
 
+test('agents preview named and unnamed templates before insertion without changing canvas, storage or undo', async ({ page }, testInfo) => {
+  client = await connectAgent(page);
+  await page.getByRole('button', { name: 'Close agent panel' }).click();
+  const file = simpleFile();
+  await mockLibrary(page, { ...file, libraryItems: [
+    { ...file.libraryItems[0], name: 'Cloud Server' },
+    { id: 'unlabeled', status: 'published', created: 1, elements: [{ ...rectangle('round'), type: 'ellipse', backgroundColor: '#ffbb99' }] },
+    { id: 'third', status: 'published', created: 1, elements: [{ ...rectangle('diamond'), type: 'diamond', backgroundColor: '#99ccff' }] },
+  ] });
+  await install(page);
+  await page.getByTestId('sidebar-close').click();
+  await page.getByTestId('editor').click({ position: { x: 950, y: 700 } });
+  const initial = await apply([{ op: 'create_shape', id: 'keep', shape: 'rectangle', x: 50, y: 50, fill: '#abcdef' }]);
+  const changed = await apply([{ op: 'update', id: 'keep', changes: { fill: '#ffddaa' } }]);
+  const before = await call('get_diagram'), saved = await diskShapes(page), scene = await rawScene();
+  async function preview(args: Record<string, unknown> = {}) {
+    const result = await client.callTool({ name: 'preview_custom_shapes', arguments: args });
+    expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+    const image = (result.content as { type: string; data: string; mimeType: string }[]).find(block => block.type === 'image')!;
+    expect(image.mimeType).toBe('image/png');
+    const bytes = Buffer.from(image.data, 'base64');
+    expect(bytes.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+    const metadata = result.structuredContent as any;
+    expect(metadata).not.toHaveProperty('data');
+    expect(metadata.width).toBe(bytes.readUInt32BE(16)); expect(metadata.height).toBe(bytes.readUInt32BE(20));
+    expect(Math.max(metadata.width, metadata.height)).toBeLessThanOrEqual(Number(args.maxSize ?? 1200));
+    return { metadata, image, bytes };
+  }
+  const gallery = await preview({ limit: 2, maxSize: 512 });
+  expect(gallery.metadata).toMatchObject({ total: 3, nextOffset: 2, shapes: [
+    { number: 1, id: 'plain-box', name: 'Cloud Server', text: '' }, { number: 2, id: 'unlabeled', text: '' },
+  ] });
+  await testInfo.attach('custom-shape-gallery', { body: gallery.bytes, contentType: 'image/png' });
+  // Verify there are actual colored drawings, not just borders/numbers in a valid PNG.
+  const colored = await page.evaluate(async data => {
+    const image = new Image(); image.src = 'data:image/png;base64,' + data; await image.decode();
+    const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+    const context = canvas.getContext('2d')!; context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let count = 0;
+    for (let i = 0; i < pixels.length; i += 4) if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) - Math.min(pixels[i], pixels[i + 1], pixels[i + 2]) > 40) count++;
+    return count;
+  }, gallery.image.data);
+  expect(colored).toBeGreaterThan(100);
+  expect((await preview({ offset: gallery.metadata.nextOffset, limit: 2 })).metadata).toMatchObject({ nextOffset: null, shapes: [{ number: 1, id: 'third' }] });
+  expect((await preview({ query: 'CLOUD SERVER' })).metadata.shapes).toMatchObject([{ number: 1, id: 'plain-box' }]);
+  expect((await preview({ shapeIds: ['third', 'plain-box'] })).metadata.shapes).toMatchObject([{ number: 1, id: 'third' }, { number: 2, id: 'plain-box' }]);
+  expect((await preview({ shapeIds: ['unlabeled'], maxSize: 768 })).metadata).toMatchObject({ width: 768, height: 768, shapes: [{ number: 1, id: 'unlabeled' }] });
+  for (const args of [{ shapeIds: ['plain-box', 'missing'] }, { query: 'does-not-exist' }, { offset: 99 }]) {
+    expect((await client.callTool({ name: 'preview_custom_shapes', arguments: args })).isError).toBe(true);
+  }
+  expect(await call('get_diagram')).toEqual(before);
+  expect(await diskShapes(page)).toEqual(saved);
+  expect(await rawScene()).toEqual(scene);
+  await page.keyboard.press('ControlOrMeta+z');
+  await expect.poll(async () => (await call('get_diagram')).elements).toEqual(initial.elements);
+  expect(changed.elements).not.toEqual(initial.elements);
+});
+
 test('agents insert independent templates with bindings, atomic failure, retry protection and native undo', async ({ page }) => {
   client = await connectAgent(page);
+  const tools = (await client.listTools()).tools;
+  expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining(['list_custom_shapes', 'insert_custom_shape']));
   await page.getByRole('button', { name: 'Close agent panel' }).click();
   const baseline = await apply([
     { op: 'create_shape', id: 'a', shape: 'rectangle', x: 160, y: 180, width: 180, height: 100, label: 'Browser' },
@@ -201,21 +264,39 @@ test('agents insert independent templates with bindings, atomic failure, retry p
   const file = simpleFile();
   file.libraryItems.push({ id: 'browser-flow', status: 'published', created: 1, elements: (await rawScene()).elements });
   await mockLibrary(page, file); await install(page);
-  expect(await call('list_custom_shapes', { query: 'Browser' })).toMatchObject({ total: 1, shapes: [{ id: 'browser-flow', text: expect.stringContaining('Browser') }] });
+  const discovered = await call('list_custom_shapes', { query: 'Browser' });
+  expect(discovered).toMatchObject({ total: 1, shapes: [{ id: 'browser-flow', text: expect.stringContaining('Browser') }] });
   const firstPage = await call('list_custom_shapes', { limit: 1 });
   expect(firstPage.nextOffset).toBe(1);
   expect((await call('list_custom_shapes', { offset: 1, limit: 1 })).shapes[0].id).not.toBe(firstPage.shapes[0].id);
   const saved = await diskShapes(page);
-  const args = { diagramId: baseline.diagramId, expectedRevision: baseline.revision, requestId: crypto.randomUUID(),
-    operations: [{ op: 'insert_custom_shape', shapeId: 'browser-flow', idPrefix: 'copy', x: 160, y: 430 }] };
-  const inserted = await call('apply_operations', args);
+  const target = { diagramId: baseline.diagramId, expectedRevision: baseline.revision, requestId: crypto.randomUUID() };
+  const shape = { shapeId: discovered.shapes[0].id, idPrefix: 'copy', x: 160, y: 430 };
+  for (const operation of [
+    { op: 'create_shape', id: 'star', shape: 'star', x: 0, y: 0 },
+    { op: 'create_shape', id: 'star', shape: { type: 'star' }, x: 0, y: 0 },
+    { type: 'create_element', id: 'star', x: 0, y: 0 },
+  ]) {
+    const failed = await client.callTool({ name: 'apply_operations', arguments: { ...target, operations: [operation] } });
+    expect(failed.isError).toBe(true);
+    expect(JSON.stringify(failed.content)).toContain('list_custom_shapes');
+    expect(JSON.stringify(failed.content)).toContain('insert_custom_shape');
+  }
+  const missing = await client.callTool({ name: 'insert_custom_shape', arguments: { ...target, ...shape, shapeId: 'not-installed' } });
+  expect(missing.isError).toBe(true);
+  expect((await call('get_diagram')).elements).toEqual(baseline.elements);
+  const inserted = await call('insert_custom_shape', { ...target, ...shape });
   const id = (source: string) => inserted.copies.find((item: any) => item.sourceId === source).id;
   const element = (source: string) => inserted.elements.find((item: any) => item.id === id(source));
   expect(element('a')).toMatchObject({ x: 160, y: 430, text: 'Browser' });
   expect(element('link')).toMatchObject({ fromId: id('a'), toId: id('b'), text: 'Saves', strokeStyle: 'dashed' });
   expect(element('a').groupIds.length).toBeGreaterThan(0);
   expect(element('a').groupIds).toEqual(element('b').groupIds);
-  expect(await call('apply_operations', args)).toMatchObject({ replayed: true, copies: inserted.copies, elements: inserted.elements });
+  expect(await call('insert_custom_shape', { ...target, ...shape })).toMatchObject({ replayed: true, copies: inserted.copies, elements: inserted.elements });
+  expect(await call('apply_operations', { ...target, operations: [{ op: 'insert_custom_shape', ...shape }] })).toMatchObject({ replayed: true, copies: inserted.copies, elements: inserted.elements });
+  const stale = await client.callTool({ name: 'insert_custom_shape', arguments: { ...target, ...shape, requestId: crypto.randomUUID(), idPrefix: 'stale' } });
+  expect(stale.isError).toBe(true);
+  expect(JSON.stringify(stale.content)).toContain('revision_conflict');
   const failed = await client.callTool({ name: 'apply_operations', arguments: { diagramId: inserted.diagramId, expectedRevision: inserted.revision,
     operations: [{ op: 'insert_custom_shape', shapeId: 'plain-box', idPrefix: 'atomic', x: 900, y: 180 },
       { op: 'insert_custom_shape', shapeId: 'not-installed', idPrefix: 'missing', x: 900, y: 300 }] } });

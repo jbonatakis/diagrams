@@ -6,6 +6,7 @@ import { CommandError, validateArguments, type ApplyArguments, type Command, typ
 import { planOperations } from './operations';
 import { bounds, isArrow, selectedElements } from './elements';
 import { worldPoints } from './connectors';
+import { encodePreview } from './preview';
 import { savedAppState, type Diagram, type Scene } from '../library/scene';
 
 function fingerprint(elements: readonly ExcalidrawElement[]) {
@@ -145,12 +146,8 @@ export class DiagramController {
     const canvas = await exportToCanvas({ elements, files: structuredClone(this.api.getFiles()),
       appState: { ...savedAppState(this.api.getAppState()), exportBackground: true, exportWithDarkMode: false },
       maxWidthOrHeight: args.maxSize ?? 1200, exportPadding: 20 });
-    let dataURL = canvas.toDataURL('image/png');
-    if (dataURL.length > 2_000_000) dataURL = canvas.toDataURL('image/jpeg', 0.8);
-    if (dataURL.length > 2_000_000) throw new CommandError('preview_too_large', 'Request a smaller maxSize or fewer elements for this preview.');
-    const mimeType = dataURL.slice(5, dataURL.indexOf(';'));
-    return { diagramId: this.diagramId, revision, width: canvas.width, height: canvas.height, bounds: sceneBounds,
-      elementIds: elements.filter(e => !(e.type === 'text' && e.containerId)).map(e => e.id), mimeType, data: dataURL.split(',')[1] };
+    return { diagramId: this.diagramId, revision, bounds: sceneBounds,
+      elementIds: elements.filter(e => !(e.type === 'text' && e.containerId)).map(e => e.id), ...encodePreview(canvas) };
   }
 
   execute(command: Command, customShape?: (id: string) => readonly ExcalidrawElement[]) {

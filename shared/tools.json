@@ -8,7 +8,7 @@
     }
   },
   "apply_operations": {
-    "description": "Atomically create, edit, organize, or delete canvas elements. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes. Installed custom shapes can be inserted by shapeId from list_custom_shapes using insert_custom_shape.",
+    "description": "Atomically create, edit, organize, or delete canvas elements. Each operation is a flat object with an op field (not type). Basic example: {\"op\":\"create_shape\",\"id\":\"box-1\",\"shape\":\"rectangle\",\"x\":100,\"y\":100}. create_shape accepts only rectangle, ellipse or diamond. For imported library shapes, call list_custom_shapes then the dedicated insert_custom_shape tool, or include {\"op\":\"insert_custom_shape\",\"shapeId\":\"ID_FROM_LIST\",\"idPrefix\":\"copy-1\",\"x\":100,\"y\":100} in this batch. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -36,7 +36,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Create a basic shape. Angles are radians. Labels wrap; containers can grow to fit text.",
+                "description": "Create a basic rectangle, ellipse or diamond, not an imported library shape. For custom shapes, use list_custom_shapes and insert_custom_shape. Angles are radians. Labels wrap; containers can grow to fit text.",
                 "required": [
                   "op",
                   "id",
@@ -879,11 +879,13 @@
                   "shapeId": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "description": "Exact installed template ID returned by list_custom_shapes; not a shape name or native type."
                   },
                   "idPrefix": {
                     "type": "string",
-                    "pattern": "^[a-zA-Z0-9_-]{1,60}$"
+                    "pattern": "^[a-zA-Z0-9_-]{1,60}$",
+                    "description": "Unique prefix for new element IDs (idPrefix-1, idPrefix-2, etc.). Use a different prefix for each new copy."
                   },
                   "x": {
                     "type": "number",
@@ -1351,7 +1353,7 @@
     }
   },
   "list_custom_shapes": {
-    "description": "List reusable custom shapes installed in the connected browser. Returns IDs, text labels, element types, counts, and dimensions. Search by text, ID, or element type. Use apply_operations with insert_custom_shape to place a copy; use preview_diagram afterward to inspect it. These shapes are separate from the diagram library.",
+    "description": "Discover reusable custom shapes installed in the connected browser, including shapes from imported Excalidraw libraries. Returns IDs, optional imported names, text labels, element types, counts, and dimensions. Search by name, text, ID, or element type; use no query to browse unlabeled icons. Use preview_custom_shapes to see a numbered gallery before inserting anything, especially when names and text are absent. Pass a returned id as shapeId to insert_custom_shape, along with diagramId and expectedRevision from get_diagram, a unique idPrefix, and x/y coordinates. Do not use create_shape for library shapes: it only supports rectangle, ellipse and diamond. Use preview_diagram afterward to inspect the result. These templates are separate from saved diagrams. Use these IDs only with tools on this same MCP server/browser connection.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -1369,6 +1371,123 @@
           "minimum": 1,
           "maximum": 100
         }
+      }
+    }
+  },
+  "insert_custom_shape": {
+    "description": "Place a copy of an imported custom shape in the active diagram. First call list_custom_shapes to discover installed templates and use the exact returned id as shapeId. Use preview_custom_shapes to identify unlabeled icons before inserting. Call get_diagram for diagramId and expectedRevision. Pass flat arguments: diagramId, expectedRevision, shapeId, idPrefix, x, y, and optionally requestId. x/y position the top-left of the copy; original size, styling, groups and internal connections are preserved. Use a unique idPrefix for each copy. Returns new sourceId/id mappings in copies. The installed template is unchanged. This is one undo step and uses the same saving and retry behavior as apply_operations. Multiple shapes can also be inserted atomically using apply_operations with op: insert_custom_shape. Preview afterward to inspect layout.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "diagramId",
+        "expectedRevision",
+        "shapeId",
+        "idPrefix",
+        "x",
+        "y"
+      ],
+      "properties": {
+        "diagramId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Use a fresh UUID per batch. Retry with identical arguments and the same ID. The last 128 successful IDs per diagram are saved atomically with the scene and survive reloads. Replays return current state plus appliedRevision without repeating edits, even after undo. Reusing an ID with different arguments fails."
+        },
+        "shapeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Exact installed template ID returned by list_custom_shapes; not a shape name or native type."
+        },
+        "idPrefix": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,60}$",
+          "description": "Unique prefix for new element IDs (idPrefix-1, idPrefix-2, etc.). Use a different prefix for each new copy."
+        },
+        "x": {
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
+        },
+        "y": {
+          "type": "number",
+          "minimum": -1000000,
+          "maximum": 1000000
+        }
+      }
+    }
+  },
+  "preview_custom_shapes": {
+    "description": "Inspect installed custom shapes visually before inserting them. Returns an MCP image showing a numbered gallery and metadata mapping each number to its shape ID, optional imported name, text, and dimensions. With no arguments, previews the first 12 shapes. Browse with query (name, text, ID, type), offset and limit (up to 16); nextOffset identifies the next page. Or provide shapeIds (up to 16) to preview specific templates in that order; one ID gives a larger detail view. shapeIds cannot be combined with query, offset or limit. Use the returned IDs with insert_custom_shape on this same MCP server/browser connection. This tool renders in browser memory without changing the active diagram, selection, viewport, undo history or installed templates. No images are stored on the server.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "shapeIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "description": "Exact IDs from list_custom_shapes. Preserves requested order; mutually exclusive with query, offset and limit."
+        },
+        "query": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Search optional imported names, text labels, IDs and element types; omit to browse unnamed shapes."
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 12
+        },
+        "maxSize": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 1600,
+          "default": 1200
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "shapeIds",
+              "query"
+            ]
+          },
+          {
+            "required": [
+              "shapeIds",
+              "offset"
+            ]
+          },
+          {
+            "required": [
+              "shapeIds",
+              "limit"
+            ]
+          }
+        ]
       }
     }
   }

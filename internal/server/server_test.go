@@ -128,18 +128,40 @@ func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
 	client := mcpClient(t, server, credentials.Access)
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 18 {
+	if err != nil || len(tools.Tools) != 20 {
 		t.Fatalf("tools: %v, %v", tools, err)
 	}
 	seenTools := make(map[string]bool)
 	for _, tool := range tools.Tools {
 		seenTools[tool.Name] = true
-		if tool.Name == "list_custom_shapes" && (tool.Annotations == nil || !tool.Annotations.ReadOnlyHint) {
+		if (tool.Name == "list_custom_shapes" || tool.Name == "preview_custom_shapes") && (tool.Annotations == nil || !tool.Annotations.ReadOnlyHint) {
 			t.Fatal("custom shape discovery must be read-only")
 		}
+		if tool.Name == "insert_custom_shape" {
+			if tool.Annotations == nil || tool.Annotations.ReadOnlyHint {
+				t.Fatal("custom shape insertion must be a write")
+			}
+			// Clients that flatten complex union schemas still get explicit fields.
+			schema, _ := json.Marshal(tool.InputSchema)
+			var flat struct {
+				Required   []string                   `json:"required"`
+				Properties map[string]json.RawMessage `json:"properties"`
+			}
+			if err := json.Unmarshal(schema, &flat); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range flat.Required {
+				if len(flat.Properties[field]) == 0 {
+					t.Fatalf("missing explicit insertion field: %s", field)
+				}
+			}
+			if len(flat.Required) != 6 || len(flat.Properties["shapeId"]) == 0 {
+				t.Fatalf("unexpected insertion schema: %s", schema)
+			}
+		}
 	}
-	if !seenTools["list_custom_shapes"] {
-		t.Fatal("missing list_custom_shapes")
+	if !seenTools["list_custom_shapes"] || !seenTools["insert_custom_shape"] || !seenTools["preview_custom_shapes"] {
+		t.Fatal("missing custom shape tools")
 	}
 	for _, name := range []string{"list_diagrams", "create_diagram", "open_diagram", "manage_diagram", "delete_diagrams", "import_diagram", "export_diagram", "import_library", "export_library", "begin_import", "write_import_chunk", "read_export", "release_transfer", "preview_diagram", "fit_canvas"} {
 		if !seenTools[name] {
