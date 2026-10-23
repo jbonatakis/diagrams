@@ -5,16 +5,16 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 
-const origin = 'http://127.0.0.1:4180';
+export const origin = process.env.DIAGRAMS_TEST_URL ?? 'http://127.0.0.1:4180';
 const clients = new WeakMap<BrowserContext, Client>();
 
 export async function readyCanvas(page: Page, navigate = true) {
   if (navigate) await page.goto('/');
   await expect(page.getByLabel('Diagram name', { exact: true })).toBeEnabled();
   if (await page.evaluate(() => localStorage.getItem('diagrams-agent-paused') === 'true')) {
-    await page.getByRole('button', { name: 'Connect this canvas', exact: true }).click();
+    await page.getByRole('button', { name: 'Resume agent access', exact: true }).click();
   }
-  await expect(page.getByTestId('connection-status')).toHaveText('Connected');
+  await expect(page.getByTestId('connection-status')).toHaveText('Canvas ready');
 }
 
 export async function authorizeAgent(page: Page, name = 'Browser test agent', allow = true) {

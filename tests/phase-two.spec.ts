@@ -11,9 +11,11 @@ test.beforeEach(async ({ page }) => {
   page.on('pageerror', (error) => errors.push(error.message));
 });
 test.afterEach(async ({ page }) => {
-  await page.keyboard.press('Escape');
-  const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true });
-  if (await disconnect.isVisible().catch(() => false)) await disconnect.click();
+  if (!page.isClosed()) {
+    await page.keyboard.press('Escape');
+    const disconnect = page.getByRole('button', { name: 'Pause agent access', exact: true });
+    if (await disconnect.isVisible().catch(() => false)) await disconnect.click();
+  }
   await client?.close();
   expect(errors).toEqual([]);
 });
@@ -88,7 +90,7 @@ test('autosave survives reload, preserves bindings and rejects old revisions', a
   const disk = await stored(page, before.diagramId);
   expect(disk.scene.elements).toHaveLength(5);
   expect(disk.meta.name).toBe('Connection map');
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await page.getByRole('button', { name: 'Pause agent access', exact: true }).click();
   await page.reload(); await connect(page, false);
   const after = await call('get_diagram');
   expect(after.diagramId).toBe(before.diagramId);
@@ -103,7 +105,7 @@ test('autosave survives reload, preserves bindings and rejects old revisions', a
   await call('list_diagrams');
   const deleted = await call('get_diagram');
   expect(deleted.elements.find((e: any) => e.id === 'arrow').fromId).toBeNull();
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await page.getByRole('button', { name: 'Pause agent access', exact: true }).click();
   await page.reload(); await connect(page, false);
   expect((await call('get_diagram')).elements).toEqual(deleted.elements);
 
@@ -113,7 +115,7 @@ test('loaded scenes clear the loader and autosave mouse edits after reload and s
   await connect(page);
   const first = await sample();
   await call('list_diagrams');
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await page.getByRole('button', { name: 'Pause agent access', exact: true }).click();
   await page.reload(); await connect(page, false);
 
   async function drawAndCheckSave(id: string, expectedElementCount: number) {
@@ -199,7 +201,7 @@ test('editable, SVG and PNG exports are retrievable; imports preserve images, la
     else expect(Buffer.from(image.data, 'base64').subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
   }
   await call('list_diagrams');
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await page.getByRole('button', { name: 'Pause agent access', exact: true }).click();
   await page.reload(); await connect(page, false);
   const persisted = JSON.parse((await exported('export_diagram', { diagramId: imported.id })).data);
   expect(persisted.files.pixel.dataURL).toBe(dataURL);
@@ -362,13 +364,13 @@ test('a second tab cannot overwrite the same browser library and can retry after
   await connect(page); const created = await sample(); await call('list_diagrams');
   const second = await context.newPage(); await second.goto('/');
   await expect(second.getByRole('alert')).toContainText('already open in another tab');
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await page.getByRole('button', { name: 'Pause agent access', exact: true }).click();
   await page.close();
   await second.getByRole('button', { name: 'Retry', exact: true }).click();
   await connect(second, false);
   expect((await call('get_diagram')).diagramId).toBe(created.diagramId);
   expect((await call('get_diagram')).elements).toEqual(created.elements);
-  await second.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await second.getByRole('button', { name: 'Pause agent access', exact: true }).click();
   await second.close();
 });
 

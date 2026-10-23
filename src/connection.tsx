@@ -17,6 +17,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export function useAgentConnection(workspace: Workspace) {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
+  const [paused, setPaused] = useState(() => localStorage.getItem(pauseKey) === 'true');
   const [error, setError] = useState('');
   const [activities, setActivities] = useState<Activity[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -38,6 +39,7 @@ export function useAgentConnection(workspace: Workspace) {
 
   const connect = useCallback(() => {
     localStorage.removeItem(pauseKey);
+    setPaused(false);
     bridge.current?.disconnect();
     const next = new BrowserBridge(workspace, async () => {
       const data = await request<Session>('/api/session', { method: 'POST', headers: { 'X-Diagrams-Request': '1' } });
@@ -55,6 +57,7 @@ export function useAgentConnection(workspace: Workspace) {
 
   function disconnect() {
     localStorage.setItem(pauseKey, 'true');
+    setPaused(true);
     bridge.current?.disconnect();
   }
 
@@ -78,7 +81,7 @@ export function useAgentConnection(workspace: Workspace) {
   }, [connect, refresh]);
 
   async function mutate(path: string) {
-    if (!session.current) throw new Error('Connect this browser first.');
+    if (!session.current) throw new Error('Resume agent access first.');
     await request(path, { method: 'POST', headers: { 'X-Diagrams-CSRF': session.current.csrf } });
   }
   async function revoke(id: string) {
@@ -96,7 +99,7 @@ export function useAgentConnection(workspace: Workspace) {
     finally { setBusy(false); }
   }
 
-  return { status, error, activities, agents, busy, endpoint, connect, disconnect, revoke, forget, refresh };
+  return { status, paused, error, activities, agents, busy, endpoint, connect, disconnect, revoke, forget, refresh };
 }
 
 export function AgentConnectionPanel({ connection, onClose }: {
@@ -104,7 +107,7 @@ export function AgentConnectionPanel({ connection, onClose }: {
 }) {
   const [copied, setCopied] = useState(false);
   const [confirmForget, setConfirmForget] = useState(false);
-  const { status, error, agents, busy, endpoint, activities } = connection;
+  const { status, paused, error, agents, busy, endpoint, activities } = connection;
   const connected = status === 'connected';
   const connecting = status === 'connecting' || status === 'reconnecting';
   async function copy() {
@@ -112,29 +115,35 @@ export function AgentConnectionPanel({ connection, onClose }: {
     catch { setCopied(false); }
   }
   return <aside className="agent-panel" id="agent-panel" aria-label="Agent connection">
-    <div className={`connection-card ${connected ? 'connected' : ''}`}>
-      <div className="connection-heading">
-        <span className={`status-dot ${connected ? 'online' : connecting ? 'pending' : ''}`} />
-        <strong data-testid="connection-status">{connected ? 'Connected' : connecting ? 'Connecting…' : 'Not connected'}</strong>
+    <section className="agent-setup" aria-labelledby="agent-setup-heading">
+      <div className="panel-heading">
+        <h2 id="agent-setup-heading">Set up your agent</h2>
         <button className="icon-button agent-panel-close" aria-label="Close agent panel" onClick={onClose}>×</button>
       </div>
-      <p>{connected ? 'This browser is ready. Only agents you approve can access its library.' : 'Your diagrams stay available while agent access is disconnected.'}</p>
+      <p>Add this URL in your agent’s MCP settings, then authenticate and approve access in this browser.</p>
+      <code className="endpoint">{endpoint}</code>
+      <button className="primary-button copy-endpoint" onClick={copy}>{copied ? 'Copied MCP URL' : 'Copy MCP URL'}</button>
+      <details className="setup-details"><summary>Codex instructions</summary>
+        <p>Add this URL in MCP settings and choose Authenticate. Keep this app open in the browser where you approve access.</p>
+        <pre>{`[mcp_servers.diagrams]\nurl = "${endpoint}"`}</pre>
+        <p>From the terminal: <code>codex mcp login diagrams</code></p>
+        <a href="https://learn.chatgpt.com/docs/extend/mcp#connect-codex-to-an-mcp-server" target="_blank" rel="noreferrer">Codex connection guide ↗</a>
+      </details>
+    </section>
+    <div className={`connection-card ${connected ? 'connected' : ''}`}>
+      <div className="connection-heading">
+        <span aria-hidden="true" className={`status-dot ${connected ? 'online' : connecting ? 'pending' : ''}`} />
+        <strong data-testid="connection-status" role="status">{paused ? 'Agent access paused' : connected ? 'Canvas ready' : connecting ? 'Preparing canvas…' : 'Canvas unavailable'}</strong>
+      </div>
+      <p>{paused ? 'Approved agents cannot use this library while access is paused.' : connected ? 'Your canvas is ready for approved agents. Keep this tab open.' : connecting ? 'Your browser reconnects automatically. You can keep drawing.' : 'Resume agent access to make this library available again.'}</p>
       {connected || connecting
-        ? <button className="secondary-button" onClick={connection.disconnect}>Disconnect</button>
-        : <button className="primary-button" onClick={connection.connect}>Connect this canvas</button>}
+        ? <button className="secondary-button" onClick={connection.disconnect}>Pause agent access</button>
+        : <button className="secondary-button" onClick={connection.connect}>Resume agent access</button>}
       {error && <p className="error-message" role="alert">{error}</p>}
     </div>
-    <div className="endpoint-section"><div className="section-label"><h3>MCP endpoint</h3><button className="text-button" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button></div><code className="endpoint">{endpoint}</code><p>Add this URL to your agent, then choose Authenticate and approve access in this browser.</p></div>
-    <details className="setup-details"><summary>Connect from Codex</summary>
-      <p>Add this URL in MCP settings and choose Authenticate. Keep this app open in the browser where you approve access.</p>
-      <pre>{`[mcp_servers.diagrams]\nurl = "${endpoint}"`}</pre>
-      <p>For an existing connection, remove its old bearer token or Authorization header first.</p>
-      <p>From the terminal: <code>codex mcp login diagrams</code></p>
-      <a href="https://learn.chatgpt.com/docs/extend/mcp#connect-codex-to-an-mcp-server" target="_blank" rel="noreferrer">Codex connection guide ↗</a>
-    </details>
     <div className="paired-agents">
-      <div className="section-label"><h3>Connected agents</h3><button className="text-button" onClick={() => void connection.refresh()}>Refresh</button></div>
-      {agents.length === 0 ? <p>No agents have access yet.</p> : <ul>{agents.map(agent =>
+      <div className="section-label"><h3>Approved agents</h3><button className="text-button" onClick={() => void connection.refresh()}>Refresh</button></div>
+      {agents.length === 0 ? <p>No agents approved yet.</p> : <ul>{agents.map(agent =>
         <li key={agent.id}><div><strong>{agent.name}</strong><small>Approved {new Date(agent.createdAt * 1000).toLocaleDateString()}</small></div><button className="text-button" disabled={busy} onClick={() => void connection.revoke(agent.id)} aria-label={`Revoke ${agent.name}`}>Revoke</button></li>)}</ul>}
       {!confirmForget ? <button className="text-button forget-button" onClick={() => setConfirmForget(true)}>Forget this browser</button> :
         <div className="forget-confirmation"><p>Remove every agent’s access and forget this browser’s pairing? Your local diagrams will remain.</p><button className="secondary-button" disabled={busy} onClick={async () => { await connection.forget(); setConfirmForget(false); }}>Forget pairings</button><button className="text-button" onClick={() => setConfirmForget(false)}>Cancel</button></div>}

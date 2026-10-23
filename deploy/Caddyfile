@@ -1,0 +1,7 @@
+# Import this file from the VM's existing Caddyfile.
+diagrams.bonatak.is {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8788 {
+        stream_close_delay 5m
+    }
+}

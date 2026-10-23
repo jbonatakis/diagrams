@@ -1,13 +1,13 @@
 import { test, expect, type Page } from '@playwright/test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { connectAgent } from './connection-helpers';
+import { connectAgent, origin } from './connection-helpers';
 import type { DiagramSnapshot } from '../src/editor/controller';
 import type { Operation } from '../src/protocol';
 
 let client: Client;
 
 test.afterEach(async ({ page }) => {
-  const disconnect = page.getByRole('button', { name: 'Disconnect', exact: true });
+  const disconnect = page.getByRole('button', { name: 'Pause agent access', exact: true });
   if (await disconnect.isVisible().catch(() => false)) await disconnect.click();
   await client?.close();
 });
@@ -82,9 +82,9 @@ test('agent creates a diagram, human moves a shape, agent reads and moves it, un
   // Native undo redraws bound arrows, so exact pre-undo endpoint equality is
   // not the editor's contract. Compare with an otherwise identical human-only
   // move + undo, rather than masking connector regressions with a loose tolerance.
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await page.getByRole('button', { name: 'Pause agent access', exact: true }).click();
   await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError).toBe(true);
-  const controlContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, baseURL: 'http://127.0.0.1:4180' });
+  const controlContext = await browser.newContext({ viewport: { width: 1440, height: 1000 }, baseURL: origin });
   const control = await controlContext.newPage();
   control.on('pageerror', (error) => pageErrors.push(error.message));
   try {
@@ -163,7 +163,7 @@ test('independent visitors connect simultaneously without sharing diagrams', asy
   await connect(page);
   expect((await apply(await read(), sample)).isError).not.toBe(true);
   const first = await read();
-  const secondContext = await browser.newContext({ baseURL: 'http://127.0.0.1:4180' });
+  const secondContext = await browser.newContext({ baseURL: origin });
   try {
     const second = await secondContext.newPage();
     const otherClient = await connectAgent(second);
@@ -175,6 +175,6 @@ test('independent visitors connect simultaneously without sharing diagrams', asy
     expect(intrusion.isError).toBe(true);
     expect(await read()).toEqual(first);
   } finally { await secondContext.close(); }
-  await page.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await page.getByRole('button', { name: 'Pause agent access', exact: true }).click();
   await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError).toBe(true);
 });

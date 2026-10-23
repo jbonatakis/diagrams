@@ -1,0 +1,14 @@
+{
+  "id": "diagrams",
+  "displayName": "Diagrams",
+  "adapter": "generic",
+  "directory": "/srv/apps/diagrams",
+  "composeProject": "diagrams",
+  "appService": "diagrams",
+  "allowedLogServices": ["diagrams"],
+  "internalHealthUrl": "http://127.0.0.1:8788/healthz",
+  "publicHealthUrl": "https://diagrams.bonatak.is/healthz",
+  "branch": "main",
+  "backupStatus": "none",
+  "caddySite": "/etc/caddy/sites/diagrams.bonatak.is.caddy"
+}

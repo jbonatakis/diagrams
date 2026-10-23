@@ -9,14 +9,32 @@ async function read(client: Client) {
   return result.structuredContent as DiagramSnapshot;
 }
 
-test('pairing survives reload and reopening a tab without a token prompt', async ({ page, context }) => {
-  const client = await connectAgent(page);
+test('pairing survives reload, pausing access and reopening a tab without a token prompt', async ({ page, context }, testInfo) => {
+  await readyCanvas(page);
+  await expect(page.getByRole('heading', { name: 'Set up your agent', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Set up your agent', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Copy MCP URL', exact: true })).toBeVisible();
+  await expect(page.getByText('No agents approved yet.', { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('agent-setup.png') });
+  const client = await connectAgent(page, false);
   const before = await read(client);
   await expect(page.getByLabel('Connection token', { exact: true })).toHaveCount(0);
   await page.reload();
-  await expect(page.getByTestId('connection-status')).toHaveText('Connected');
+  await expect(page.getByTestId('connection-status')).toHaveText('Canvas ready');
   const after = await read(client);
   expect(after.diagramId).toBe(before.diagramId);
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Approved agents', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Agent access', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Pause agent access', exact: true }).click();
+  await expect(page.getByTestId('connection-status')).toHaveText('Agent access paused');
+  await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError).toBe(true);
+  await page.reload();
+  await expect(page.getByTestId('connection-status')).toHaveText('Agent access paused');
+  await expect(page.getByRole('button', { name: 'Revoke Browser test agent', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Resume agent access', exact: true }).click();
+  await expect(page.getByTestId('connection-status')).toHaveText('Canvas ready');
+  expect((await read(client)).diagramId).toBe(before.diagramId);
   await page.close();
   const reopened = await context.newPage();
   await readyCanvas(reopened);
@@ -47,12 +65,12 @@ test('forgetting a browser revokes access but preserves locally saved diagrams',
   await client.callTool({ name: 'list_diagrams', arguments: {} });
   await page.getByRole('button', { name: 'Forget this browser', exact: true }).click();
   await page.getByRole('button', { name: 'Forget pairings', exact: true }).click();
-  await expect(page.getByTestId('connection-status')).toHaveText('Not connected');
+  await expect(page.getByTestId('connection-status')).toHaveText('Agent access paused');
   await expect(client.callTool({ name: 'get_diagram', arguments: {} })).rejects.toThrow();
   await page.reload();
   await expect(page.getByTestId('scene-stats')).toContainText('1 elements');
-  await page.getByRole('button', { name: 'Connect this canvas', exact: true }).click();
-  await expect(page.getByTestId('connection-status')).toHaveText('Connected');
+  await page.getByRole('button', { name: 'Resume agent access', exact: true }).click();
+  await expect(page.getByTestId('connection-status')).toHaveText('Canvas ready');
   const replacement = await authorizeAgent(page, 'New pairing');
   const recovered = await read(replacement);
   expect(recovered.diagramId).toBe(state.diagramId);
@@ -63,7 +81,7 @@ test('canceling consent grants no access and keeps the drawing tab usable', asyn
   await readyCanvas(page);
   await expect(authorizeAgent(page, 'Declined agent', false)).rejects.toThrow('Authorization declined');
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(page.getByText('No agents have access yet.')).toBeVisible();
+  await expect(page.getByText('No agents approved yet.')).toBeVisible();
   await expect(page.getByLabel('Diagram name', { exact: true })).toBeEnabled();
   await page.getByLabel('Diagram name', { exact: true }).fill('Still drawing');
   await page.getByLabel('Diagram name', { exact: true }).press('Enter');

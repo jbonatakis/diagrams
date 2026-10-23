@@ -1,0 +1,35 @@
+name: diagrams
+
+services:
+  diagrams:
+    build: .
+    image: ${DIAGRAMS_IMAGE:-diagrams:local}
+    restart: unless-stopped
+    environment:
+      DIAGRAMS_PUBLIC_URL: ${DIAGRAMS_PUBLIC_URL:-https://diagrams.bonatak.is}
+      DIAGRAMS_ADDR: 0.0.0.0:8080
+      DIAGRAMS_DB: /data/pairings.db
+      DIAGRAMS_STATIC_DIR: /app/dist
+      GOMEMLIMIT: 192MiB
+    ports:
+      - "127.0.0.1:${DIAGRAMS_PORT:-8788}:8080"
+    volumes:
+      - pairings:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 64
+    stop_grace_period: 15s
+    logging:
+      driver: local
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  pairings:

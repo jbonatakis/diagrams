@@ -58,7 +58,6 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
   const [api, setAPI] = useState<ExcalidrawImperativeAPI | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
   const connection = useAgentConnection(workspace);
-  const connected = connection.status === 'connected';
 
   useEffect(() => {
     if (!api) return;
@@ -90,8 +89,8 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
         <div ref={setDocumentMenuHost} />
       </div>
       <span className={`save-badge ${state.saveStatus}`} data-testid="save-status" role="status">{({ saved: 'Saved in browser', unsaved: 'Unsaved changes', saving: 'Saving…', error: 'Save failed' })[state.saveStatus]}</span>
-      <button className={`connection-toggle ${connected ? 'is-connected' : ''}`} onClick={() => setPanelOpen(!panelOpen)} aria-expanded={panelOpen} aria-controls="agent-panel">
-        <span className={`status-dot ${connected ? 'online' : ''}`} />{connected ? 'Canvas connected' : 'Connect agent'}
+      <button className="connection-toggle" onClick={() => setPanelOpen(!panelOpen)} aria-expanded={panelOpen} aria-controls="agent-panel">
+        {connection.agents.length === 0 ? 'Set up your agent' : 'Agent access'}
         <span aria-hidden="true">↗</span>
       </button>
     </header>

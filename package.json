@@ -10,7 +10,9 @@
     "test": "playwright test",
     "test:ui": "playwright test --ui",
     "mcp": "node --env-file-if-exists=.env scripts/mcp.mjs",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "verify:docker": "node scripts/verify-docker.mjs",
+    "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.0",

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -96,10 +98,7 @@ func New(config Config) (*Server, error) {
 	s.mux.HandleFunc("POST /api/agents/{id}/revoke", s.revokeAgent)
 	s.mux.HandleFunc("POST /api/forget", s.forgetBrowser)
 	s.mux.HandleFunc("GET /api/bridge", s.serveBridge)
-	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	if config.StaticDir != "" {
 		files := http.FileServer(http.Dir(config.StaticDir))
@@ -114,6 +113,16 @@ func New(config Config) (*Server, error) {
 				return
 			}
 			w.Header().Set("Cache-Control", "no-cache")
+			// Vite puts content hashes in these filenames. Cache only files that
+			// exist, so a missing asset from a previous deploy is never cached.
+			asset := path.Clean(r.URL.Path)
+			if strings.HasPrefix(asset, "/assets/") {
+				if info, err := os.Stat(filepath.Join(config.StaticDir, asset)); err != nil || !info.Mode().IsRegular() {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
 			files.ServeHTTP(w, r)
 		})
 	}
@@ -132,6 +141,23 @@ func New(config Config) (*Server, error) {
 		}
 	}()
 	return s, nil
+}
+
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := s.db.PingContext(ctx); err != nil {
+		http.Error(w, "Pairing database unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if s.config.StaticDir != "" {
+		if info, err := os.Stat(filepath.Join(s.config.StaticDir, "index.html")); err != nil || !info.Mode().IsRegular() {
+			http.Error(w, "Frontend unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	jsonReply(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) Handler() http.Handler {
