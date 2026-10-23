@@ -21,6 +21,7 @@ export function useAgentConnection(workspace: Workspace) {
   const [error, setError] = useState('');
   const [activities, setActivities] = useState<Activity[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [endpoint, setEndpoint] = useState(new URL('/mcp', location.href).href);
   const session = useRef<Session | undefined>(undefined);
@@ -31,7 +32,7 @@ export function useAgentConnection(workspace: Workspace) {
     if (!session.current) return;
     try {
       const data = await request<{ agents: Agent[] }>('/api/agents');
-      if (alive.current) setAgents(data.agents);
+      if (alive.current) { setAgents(data.agents); setAgentsLoaded(true); }
     } catch (failure) {
       if (alive.current) setError(failure instanceof Error ? failure.message : 'Could not list agents.');
     }
@@ -99,7 +100,7 @@ export function useAgentConnection(workspace: Workspace) {
     finally { setBusy(false); }
   }
 
-  return { status, paused, error, activities, agents, busy, endpoint, connect, disconnect, revoke, forget, refresh };
+  return { status, paused, error, activities, agents, agentsLoaded, busy, endpoint, connect, disconnect, revoke, forget, refresh };
 }
 
 export function AgentConnectionPanel({ connection, onClose }: {

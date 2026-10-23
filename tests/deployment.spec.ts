@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { test, expect } from '@playwright/test';
 import type { DiagramSnapshot } from '../src/editor/controller';
-import { connectAgent, origin } from './connection-helpers';
+import { connectAgent, openAgentPanel, origin } from './connection-helpers';
 
 test('browser and agent reconnect after container recreation with pairings intact', async ({ page }) => {
   const project = process.env.DIAGRAMS_TEST_COMPOSE_PROJECT ?? '';
@@ -32,6 +32,7 @@ test('browser and agent reconnect after container recreation with pairings intac
   }, { timeout: 20_000 }).toBe(before.diagramId);
   expect((await read()).elements).toEqual(before.elements);
   await page.reload();
+  await openAgentPanel(page);
   await expect(page.getByTestId('connection-status')).toHaveText('Canvas ready');
   expect((await read()).elements).toEqual(before.elements);
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();

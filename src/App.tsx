@@ -56,8 +56,10 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     return workspace.run('manage_diagram', { diagramId: item.id, expectedRevision: item.id === workspace.active.id ? workspace.controller!.revision : item.revision, action, ...(name === undefined ? {} : { name }) });
   }
   const [api, setAPI] = useState<ExcalidrawImperativeAPI | null>(null);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [setupHintDismissed, setSetupHintDismissed] = useState(false);
   const connection = useAgentConnection(workspace);
+  const needsAgent = connection.agentsLoaded && connection.agents.length === 0;
 
   useEffect(() => {
     if (!api) return;
@@ -89,8 +91,10 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
         <div ref={setDocumentMenuHost} />
       </div>
       <span className={`save-badge ${state.saveStatus}`} data-testid="save-status" role="status">{({ saved: 'Saved in browser', unsaved: 'Unsaved changes', saving: 'Saving…', error: 'Save failed' })[state.saveStatus]}</span>
-      <button className="connection-toggle" onClick={() => setPanelOpen(!panelOpen)} aria-expanded={panelOpen} aria-controls="agent-panel">
-        {connection.agents.length === 0 ? 'Set up your agent' : 'Agent access'}
+      <button className={`connection-toggle${needsAgent && !setupHintDismissed ? ' needs-setup' : ''}`}
+        onClick={() => { setPanelOpen(!panelOpen); setSetupHintDismissed(true); }} onAnimationEnd={() => setSetupHintDismissed(true)}
+        aria-expanded={panelOpen} aria-controls="agent-panel">
+        {needsAgent ? 'Set up your agent' : 'Agent access'}
         <span aria-hidden="true">↗</span>
       </button>
     </header>

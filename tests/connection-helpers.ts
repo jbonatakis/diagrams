@@ -8,9 +8,15 @@ import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprot
 export const origin = process.env.DIAGRAMS_TEST_URL ?? 'http://127.0.0.1:4180';
 const clients = new WeakMap<BrowserContext, Client>();
 
+export async function openAgentPanel(page: Page) {
+  const toggle = page.locator('button[aria-controls="agent-panel"]');
+  if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+}
+
 export async function readyCanvas(page: Page, navigate = true) {
   if (navigate) await page.goto('/');
   await expect(page.getByLabel('Diagram name', { exact: true })).toBeEnabled();
+  await openAgentPanel(page);
   if (await page.evaluate(() => localStorage.getItem('diagrams-agent-paused') === 'true')) {
     await page.getByRole('button', { name: 'Resume agent access', exact: true }).click();
   }

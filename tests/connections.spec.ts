@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { DiagramSnapshot } from '../src/editor/controller';
-import { authorizeAgent, connectAgent, readyCanvas } from './connection-helpers';
+import { authorizeAgent, connectAgent, openAgentPanel, readyCanvas } from './connection-helpers';
 
 async function read(client: Client) {
   const result = await client.callTool({ name: 'get_diagram', arguments: {} });
@@ -10,7 +10,11 @@ async function read(client: Client) {
 }
 
 test('pairing survives reload, pausing access and reopening a tab without a token prompt', async ({ page, context }, testInfo) => {
-  await readyCanvas(page);
+  await page.goto('/');
+  await expect(page.getByLabel('Diagram name', { exact: true })).toBeEnabled();
+  await expect(page.getByRole('complementary', { name: 'Agent connection' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Set up your agent', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await readyCanvas(page, false);
   await expect(page.getByRole('heading', { name: 'Set up your agent', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Set up your agent', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Copy MCP URL', exact: true })).toBeVisible();
@@ -20,9 +24,16 @@ test('pairing survives reload, pausing access and reopening a tab without a toke
   const before = await read(client);
   await expect(page.getByLabel('Connection token', { exact: true })).toHaveCount(0);
   await page.reload();
-  await expect(page.getByTestId('connection-status')).toHaveText('Canvas ready');
+  await expect(page.getByLabel('Diagram name', { exact: true })).toBeEnabled();
+  await expect(page.getByRole('complementary', { name: 'Agent connection' })).toHaveCount(0);
+  const toggle = page.getByRole('button', { name: 'Agent access', exact: true });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError === true).toBe(false);
   const after = await read(client);
   expect(after.diagramId).toBe(before.diagramId);
+  await expect(toggle).not.toHaveClass(/needs-setup/);
+  await openAgentPanel(page);
+  await expect(page.getByTestId('connection-status')).toHaveText('Canvas ready');
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Approved agents', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Agent access', exact: true })).toBeVisible();
@@ -30,6 +41,7 @@ test('pairing survives reload, pausing access and reopening a tab without a toke
   await expect(page.getByTestId('connection-status')).toHaveText('Agent access paused');
   await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError).toBe(true);
   await page.reload();
+  await openAgentPanel(page);
   await expect(page.getByTestId('connection-status')).toHaveText('Agent access paused');
   await expect(page.getByRole('button', { name: 'Revoke Browser test agent', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Resume agent access', exact: true }).click();
@@ -37,7 +49,13 @@ test('pairing survives reload, pausing access and reopening a tab without a toke
   expect((await read(client)).diagramId).toBe(before.diagramId);
   await page.close();
   const reopened = await context.newPage();
-  await readyCanvas(reopened);
+  await reopened.setViewportSize({ width: 390, height: 844 });
+  await reopened.goto('/');
+  await expect(reopened.getByLabel('Diagram name', { exact: true })).toBeEnabled();
+  await expect.poll(async () => (await client.callTool({ name: 'get_diagram', arguments: {} })).isError === true).toBe(false);
+  await expect(reopened.getByRole('complementary', { name: 'Agent connection' })).toHaveCount(0);
+  await reopened.screenshot({ path: testInfo.outputPath('agent-sidebar-closed-mobile.png') });
+  await readyCanvas(reopened, false);
   expect((await read(client)).diagramId).toBe(before.diagramId);
   await reopened.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(reopened.getByRole('button', { name: 'Revoke Browser test agent', exact: true })).toBeVisible();
@@ -69,6 +87,7 @@ test('forgetting a browser revokes access but preserves locally saved diagrams',
   await expect(client.callTool({ name: 'get_diagram', arguments: {} })).rejects.toThrow();
   await page.reload();
   await expect(page.getByTestId('scene-stats')).toContainText('1 elements');
+  await openAgentPanel(page);
   await page.getByRole('button', { name: 'Resume agent access', exact: true }).click();
   await expect(page.getByTestId('connection-status')).toHaveText('Canvas ready');
   const replacement = await authorizeAgent(page, 'New pairing');
