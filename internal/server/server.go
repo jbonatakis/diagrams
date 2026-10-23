@@ -65,7 +65,7 @@ func New(config Config) (*Server, error) {
 	for name, definition := range definitions {
 		mcpServer.AddTool(&mcp.Tool{
 			Name: name, Description: definition.Description, InputSchema: definition.InputSchema,
-			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "export_diagram" || name == "export_library" || name == "read_export" || name == "preview_diagram", OpenWorldHint: &closedWorld},
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: name == "get_diagram" || name == "list_diagrams" || name == "list_custom_shapes" || name == "export_diagram" || name == "export_library" || name == "read_export" || name == "preview_diagram", OpenWorldHint: &closedWorld},
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			args := req.Params.Arguments
 			if len(args) == 0 {

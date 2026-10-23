@@ -1,4 +1,5 @@
 import { CommandError, type DeleteDiagramTarget } from '../protocol';
+import type { LibraryItems } from '@excalidraw/excalidraw/types';
 import { byteLength, MAX_DOCUMENT_BYTES, parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene, type StorageSize } from './scene';
 
 const request = <T>(r: IDBRequest<T>) => new Promise<T>((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
@@ -173,6 +174,13 @@ export class DiagramStorage {
   async setActive(id: string) {
     const tx = this.db.transaction('settings', 'readwrite'); const done = completed(tx);
     tx.objectStore('settings').put(id, 'active'); await done;
+  }
+  async getCustomShapes(): Promise<LibraryItems | undefined> {
+    return request(this.db.transaction('settings').objectStore('settings').get('customShapes'));
+  }
+  async setCustomShapes(items: LibraryItems) {
+    const tx = this.db.transaction('settings', 'readwrite'); const done = completed(tx);
+    tx.objectStore('settings').put(items, 'customShapes'); await done;
   }
   close() { this.db.close(); }
 }

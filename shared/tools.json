@@ -8,7 +8,7 @@
     }
   },
   "apply_operations": {
-    "description": "Atomically create, edit, organize, or delete canvas elements. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes.",
+    "description": "Atomically create, edit, organize, or delete canvas elements. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes. Installed custom shapes can be inserted by shapeId from list_custom_shapes using insert_custom_shape.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -860,6 +860,42 @@
                     ]
                   }
                 }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Insert a copy of an installed custom shape at x/y (top-left of its bounds), preserving size, styles, groups and internal bindings. Creates IDs idPrefix-1, idPrefix-2, etc.; returns their sourceId/id mappings in copies. The installed template is unchanged.",
+                "required": [
+                  "op",
+                  "shapeId",
+                  "idPrefix",
+                  "x",
+                  "y"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "insert_custom_shape"
+                  },
+                  "shapeId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "idPrefix": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,60}$"
+                  },
+                  "x": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  },
+                  "y": {
+                    "type": "number",
+                    "minimum": -1000000,
+                    "maximum": 1000000
+                  }
+                }
               }
             ]
           }
@@ -1311,6 +1347,28 @@
           "elementIds",
           "selectionOnly"
         ]
+      }
+    }
+  },
+  "list_custom_shapes": {
+    "description": "List reusable custom shapes installed in the connected browser. Returns IDs, text labels, element types, counts, and dimensions. Search by text, ID, or element type. Use apply_operations with insert_custom_shape to place a copy; use preview_diagram afterward to inspect it. These shapes are separate from the diagram library.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "query": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
       }
     }
   }

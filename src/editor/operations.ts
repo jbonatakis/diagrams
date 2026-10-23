@@ -1,4 +1,4 @@
-import { convertToExcalidrawElements, newElementWith, restoreElements } from '@excalidraw/excalidraw';
+import { convertToExcalidrawElements, getCommonBounds, newElementWith, restoreElements } from '@excalidraw/excalidraw';
 import type { ExcalidrawArrowElement } from '@excalidraw/excalidraw/element/types';
 import { CommandError, type ElementChanges, type Operation, type Point } from '../protocol';
 import { bounds, editable, isArrow, isLinear, isShape, measureText, newID, reflowLabel, required, style, withLabels, type Element, type Skeleton } from './elements';
@@ -89,9 +89,14 @@ function duplicate(elements: Element[], op: Extract<Operation, { op: 'duplicate'
   for (const e of elements) if (!e.isDeleted && e.type === 'arrow' && e.startBinding && e.endBinding && selected.has(e.startBinding.elementId) && selected.has(e.endBinding.elementId)) selected.add(e.id);
   const all = withLabels(elements, [...selected]);
   const source = elements.filter(e => !e.isDeleted && all.has(e.id));
-  const mapping = new Map(source.map((e, index) => [e.id, op.idPrefix + '-' + (index + 1)]));
+  return copyElements(elements, source, op.idPrefix, op.dx ?? 40, op.dy ?? 40);
+}
+
+function copyElements(elements: Element[], source: readonly Element[], idPrefix: string, dx: number, dy: number, groupInstance = false) {
+  const mapping = new Map(source.map((e, index) => [e.id, idPrefix + '-' + (index + 1)]));
   for (const id of mapping.values()) newID(elements, id);
   const groups = new Map<string, string>();
+  const instanceGroup = groupInstance && source.length > 1 ? crypto.randomUUID() : undefined;
   const copies = source.map(e => {
     const copy = structuredClone(e);
     const remap = (id: string | null) => id ? mapping.get(id) ?? null : null;
@@ -99,11 +104,12 @@ function duplicate(elements: Element[], op: Extract<Operation, { op: 'duplicate'
       if (!groups.has(group)) groups.set(group, crypto.randomUUID());
       return groups.get(group)!;
     });
-    return { ...copy, id: mapping.get(e.id)!, x: e.x + (op.dx ?? 40), y: e.y + (op.dy ?? 40),
+    if (instanceGroup) groupIds.push(instanceGroup);
+    return { ...copy, id: mapping.get(e.id)!, x: e.x + dx, y: e.y + dy,
       index: null, version: 1, versionNonce: Math.floor(Math.random() * 2 ** 31), updated: Date.now(), groupIds,
       frameId: remap(e.frameId), boundElements: e.boundElements?.filter(b => mapping.has(b.id)).map(b => ({ ...b, id: mapping.get(b.id)! })) ?? null,
       ...(e.type === 'text' ? { containerId: remap(e.containerId) } : {}),
-      ...(e.type === 'arrow' ? {
+      ...(e.type === 'arrow' || e.type === 'line' ? {
         startBinding: e.startBinding && mapping.has(e.startBinding.elementId) ? { ...e.startBinding, elementId: mapping.get(e.startBinding.elementId)! } : null,
         endBinding: e.endBinding && mapping.has(e.endBinding.elementId) ? { ...e.endBinding, elementId: mapping.get(e.endBinding.elementId)! } : null,
       } : {}),
@@ -146,11 +152,18 @@ function organize(elements: Element[], operation: Extract<Operation, { op: 'alig
   return updateAttached(result, selectedIDs, selectedIDs);
 }
 
-export function planOperations(current: readonly Element[], operations: Operation[]) {
+export function planOperations(current: readonly Element[], operations: Operation[], customShape?: (id: string) => readonly Element[]) {
   let elements = [...current];
   const copies: { sourceId: string; id: string }[] = [];
   for (const operation of operations) {
     switch (operation.op) {
+      case 'insert_custom_shape': {
+        if (!customShape) throw new CommandError('shape_not_found', 'Custom shapes are unavailable.');
+        const source = customShape(operation.shapeId);
+        const [x, y] = getCommonBounds(source);
+        const inserted = copyElements(elements, source, operation.idPrefix, operation.x - x, operation.y - y, true);
+        elements = inserted.elements; copies.push(...inserted.copies); break;
+      }
       case 'create_shape': {
         newID(elements, operation.id);
         const created = convertToExcalidrawElements([{

@@ -30,6 +30,7 @@ export type Operation = ShapeOperation | ConnectOperation | TextOperation | Line
   | { op: 'update'; id: string; changes: ElementChanges }
   | { op: 'delete'; ids: string[] }
   | { op: 'duplicate'; ids: string[]; idPrefix: string; dx?: number; dy?: number }
+  | { op: 'insert_custom_shape'; shapeId: string; idPrefix: string; x: number; y: number }
   | { op: 'group'; ids: string[]; groupId: string }
   | { op: 'ungroup'; groupIds: string[] }
   | { op: 'translate'; ids: string[]; dx: number; dy: number }

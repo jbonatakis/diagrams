@@ -128,12 +128,18 @@ func TestMCPDiscoveryAndBrowserRoundTrip(t *testing.T) {
 	client := mcpClient(t, server, credentials.Access)
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx, nil)
-	if err != nil || len(tools.Tools) != 17 {
+	if err != nil || len(tools.Tools) != 18 {
 		t.Fatalf("tools: %v, %v", tools, err)
 	}
 	seenTools := make(map[string]bool)
 	for _, tool := range tools.Tools {
 		seenTools[tool.Name] = true
+		if tool.Name == "list_custom_shapes" && (tool.Annotations == nil || !tool.Annotations.ReadOnlyHint) {
+			t.Fatal("custom shape discovery must be read-only")
+		}
+	}
+	if !seenTools["list_custom_shapes"] {
+		t.Fatal("missing list_custom_shapes")
 	}
 	for _, name := range []string{"list_diagrams", "create_diagram", "open_diagram", "manage_diagram", "delete_diagrams", "import_diagram", "export_diagram", "import_library", "export_library", "begin_import", "write_import_chunk", "read_export", "release_transfer", "preview_diagram", "fit_canvas"} {
 		if !seenTools[name] {

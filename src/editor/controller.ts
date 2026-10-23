@@ -153,7 +153,7 @@ export class DiagramController {
       elementIds: elements.filter(e => !(e.type === 'text' && e.containerId)).map(e => e.id), mimeType, data: dataURL.split(',')[1] };
   }
 
-  execute(command: Command) {
+  execute(command: Command, customShape?: (id: string) => readonly ExcalidrawElement[]) {
     if (Date.now() > command.deadline) throw new CommandError('expired_request', 'The request expired before execution. Read the diagram before trying again.');
     validateArguments(command.tool, command.arguments);
     if (command.tool === 'get_diagram') return { ...this.snapshot(), copies: [] as { sourceId: string; id: string }[] };
@@ -162,7 +162,7 @@ export class DiagramController {
     this.observe();
     if (args.diagramId !== this.diagramId) throw new CommandError('diagram_changed', 'This is a different browser diagram. Call get_diagram again.');
     if (args.expectedRevision !== this.revision) throw new CommandError('revision_conflict', `Expected revision ${args.expectedRevision}, current revision is ${this.revision}. Read the diagram and replan.`);
-    const { elements, copies } = planOperations(this.api.getSceneElementsIncludingDeleted(), args.operations);
+    const { elements, copies } = planOperations(this.api.getSceneElementsIncludingDeleted(), args.operations, customShape);
     if (Date.now() > command.deadline) throw new CommandError('expired_request', 'The batch expired before commit. Read the diagram before trying again.');
     // Commit exactly once. Do not mutate scene objects or maintain a second history.
     flushSync(() => this.api.updateScene({ elements, captureUpdate: CaptureUpdateAction.IMMEDIATELY }));

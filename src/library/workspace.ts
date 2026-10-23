@@ -1,4 +1,5 @@
-import type { ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
+import type { ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
+import { CustomShapes } from '../shapes/library';
 import { DiagramController } from '../editor/controller';
 import { CommandError, validateArguments, type ApplyArguments, type Command, type DeleteDiagramTarget, type ViewArguments } from '../protocol';
 import { DiagramStorage, storageError } from './storage';
@@ -37,10 +38,12 @@ export class Workspace {
   private error = '';
   private busy = false;
   private editorEpoch = 0;
+  private editorAPI?: ExcalidrawImperativeAPI;
+  private syncingCustomShapes = false;
   private editorReady?: { resolve: () => void; reject: (error: unknown) => void };
   private state!: ReturnType<Workspace['view']>;
 
-  private constructor(private storage: DiagramStorage, public active: Diagram, private release: () => void) { this.notify(); }
+  private constructor(private storage: DiagramStorage, public active: Diagram, public customShapes: CustomShapes, private release: () => void) { this.notify(); }
 
   static async open() {
     let release = () => {};
@@ -73,7 +76,7 @@ export class Workspace {
         }
       } else { active = makeDiagram('Untitled diagram'); await storage.insert([active]); }
       await storage.setActive(active.id);
-      const workspace = new Workspace(storage, active, release);
+      const workspace = new Workspace(storage, active, await CustomShapes.load(storage), release);
       workspace.error = recoveryMessage;
       await workspace.refresh();
       return workspace;
@@ -87,9 +90,10 @@ export class Workspace {
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   getSnapshot = () => this.state;
   get diagramId() { return this.active.id; }
-  get hasUnsavedChanges() { return this.savedSerial !== this.serial || this.status === 'error'; }
+  get hasUnsavedChanges() { return this.savedSerial !== this.serial || this.status === 'error' || this.customShapes.dirty; }
 
   attach(api: ExcalidrawImperativeAPI) {
+    this.editorAPI = api;
     this.controller?.dispose();
     const controller = new DiagramController(api, this.changed);
     this.controller = controller;
@@ -97,7 +101,7 @@ export class Workspace {
     catch (error) { this.editorReady?.reject(error); this.error = 'Could not load the diagram into the editor. Reload to retry.'; }
     this.editorReady = undefined;
     this.notify();
-    return () => { controller.dispose(); if (this.controller === controller) this.controller = undefined; };
+    return () => { controller.dispose(); if (this.controller === controller) this.controller = undefined; if (this.editorAPI === api) this.editorAPI = undefined; };
   }
 
   private changed = () => {
@@ -182,7 +186,7 @@ export class Workspace {
           return { ...this.controller.snapshot(), name: this.active.name, saveStatus: this.status, saveError: this.error || undefined,
             replayed: true, appliedRevision: previous.revision, copies: previous.copies };
         }
-        const result = this.controller.execute(command);
+        const result = this.controller.execute(command, id => this.customShapes.resolve(id));
         if (args.requestId) {
           this.active.operationReceipts = [...(this.active.operationReceipts ?? []), { id: args.requestId, fingerprint: fingerprint!, revision: result.revision, copies: result.copies ?? [] }].slice(-128);
           this.changed();
@@ -199,9 +203,54 @@ export class Workspace {
       try { return await this.perform(tool, command.arguments as Record<string, any>, command.deadline); }
       finally { if (mutating) { this.busy = false; this.notify(); } }
     };
+    return this.enqueue(execute);
+  }
+
+  private enqueue<T>(execute: () => Promise<T>): Promise<T> {
     const result = this.queue.then(execute);
     this.queue = result.catch(() => {});
     return result;
+  }
+
+  onCustomShapesChange(items: LibraryItems) {
+    // updateLibrary also emits onLibraryChange. Our correction is already in
+    // storage; feeding it back through restore/validation can cause an endless
+    // series of native updates (including harmless property-order differences).
+    if (this.syncingCustomShapes) return Promise.resolve();
+    return this.acceptCustomShapes(items);
+  }
+
+  private async acceptCustomShapes(items: LibraryItems) {
+    try { await this.customShapes.accept(items); }
+    finally {
+      // Native file imports need the same repaired templates as catalog imports
+      // and agents. Also restore the last accepted library after invalid input.
+      if (!this.syncingCustomShapes && JSON.stringify(items) !== JSON.stringify(this.customShapes.items)) {
+        this.syncingCustomShapes = true;
+        try { await this.editorAPI?.updateLibrary({ libraryItems: this.customShapes.items }); }
+        finally { this.syncingCustomShapes = false; }
+      }
+    }
+  }
+
+  importCustomShapes(items: LibraryItems) {
+    return this.enqueue(async () => {
+      if (!this.editorAPI) throw new CommandError('editor_loading', 'Wait for the canvas to finish loading, then retry.');
+      const previous = this.customShapes.items.length;
+      // Restoring older files can regenerate item IDs and element version
+      // nonces. Match actual template content so reinstalling is still a no-op.
+      const contentKey = (item: LibraryItems[number]) => canonical(item.elements.map(({ index: _index, version: _version, versionNonce: _nonce, updated: _updated, ...element }) => element));
+      const installedIDs = new Set(this.customShapes.items.map(item => item.id));
+      const installedContent = new Set(this.customShapes.items.map(contentKey));
+      const additions = items.filter(item => {
+        const key = contentKey(item);
+        if (installedIDs.has(item.id) || installedContent.has(key)) return false;
+        installedIDs.add(item.id); installedContent.add(key); return true;
+      });
+      const merged = await this.editorAPI.updateLibrary({ libraryItems: additions, merge: true, openLibraryMenu: true });
+      await this.acceptCustomShapes(merged);
+      return { added: Math.max(0, merged.length - previous), total: merged.length };
+    });
   }
 
   run(tool: string, args: Record<string, unknown> = {}) {
@@ -209,6 +258,7 @@ export class Workspace {
   }
 
   private async perform(tool: string, args: Record<string, any>, deadline: number): Promise<unknown> {
+    if (tool === 'list_custom_shapes') return this.customShapes.list(args.query, args.offset, args.limit);
     if (tool === 'list_diagrams') {
       await this.flush().catch(() => {});
       return { activeDiagramId: this.active.id, activeRevision: this.controller!.revision, saveStatus: this.status, saveError: this.error || undefined,

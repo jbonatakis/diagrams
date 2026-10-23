@@ -7,6 +7,9 @@ import { openWorkspace, type Workspace } from './library/workspace';
 import { LibraryPanel, DiagramActions, download, importFile } from './library/ui';
 import type { DiagramMeta } from './library/scene';
 import { CanvasSearch, SearchIcon } from './editor/CanvasSearch';
+import { CustomShapeInstaller, CustomShapeReturn, isShapeLibraryReturn, shapeLibraryReturnURL } from './shapes/install';
+import { CustomShapeStorage } from './shapes/StorageOverview';
+import { CommandError } from './protocol';
 
 const initialData = {
   appState: {
@@ -24,7 +27,20 @@ function Mark() {
   </svg>;
 }
 
+function CustomShapesIcon() {
+  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+    <rect x="3" y="3" width="7" height="7" rx="1" /><circle cx="17.5" cy="6.5" r="3.5" />
+    <path d="m6.5 14 4 7h-8z" /><rect x="14" y="14" width="7" height="7" rx="1" />
+  </svg>;
+}
+
 export function App() {
+  // Catalog callbacks must be handled before opening the single-writer workspace.
+  const [installReturn] = useState(isShapeLibraryReturn);
+  return installReturn ? <CustomShapeReturn /> : <LibraryApp />;
+}
+
+function LibraryApp() {
   const [workspace, setWorkspace] = useState<Workspace>();
   const [error, setError] = useState('');
   function load() { setError(''); void openWorkspace().then(setWorkspace).catch((failure: Error) => setError(failure.message)); }
@@ -35,6 +51,7 @@ export function App() {
 
 function WorkspaceView({ workspace }: { workspace: Workspace }) {
   const state = useSyncExternalStore(workspace.subscribe, workspace.getSnapshot);
+  const shapeState = useSyncExternalStore(workspace.customShapes.subscribe, workspace.customShapes.getSnapshot);
   const { snapshot } = state;
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [uiError, setUIError] = useState('');
@@ -77,7 +94,7 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (workspace.hasUnsavedChanges) event.preventDefault();
     };
-    const flush = () => { if (document.visibilityState === 'hidden') void workspace.flush().catch(() => {}); };
+    const flush = () => { if (document.visibilityState === 'hidden') void Promise.all([workspace.flush(), workspace.customShapes.flush()]).catch(() => {}); };
     window.addEventListener('beforeunload', beforeUnload);
     document.addEventListener('visibilitychange', flush);
     return () => { window.removeEventListener('beforeunload', beforeUnload); document.removeEventListener('visibilitychange', flush); };
@@ -114,6 +131,8 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
     }} />
     {(uiError || state.error) && <div className="workspace-error" role="alert"><span>{uiError || state.error}</span>{state.saveStatus === 'error' && <button onClick={() => void act(() => workspace.retrySave())}>Retry saving</button>}<button aria-label="Dismiss error" onClick={() => { setUIError(''); workspace.dismissError(); }}>×</button></div>}
     {notice && <div className="workspace-notice" role="status">{notice}<button aria-label="Dismiss notice" onClick={() => setNotice('')}>×</button></div>}
+    {shapeState.error && <div className="workspace-error" role="alert"><span>{shapeState.error}</span><button onClick={() => void workspace.customShapes.flush().catch(() => {})}>Retry saving custom shapes</button></div>}
+    <CustomShapeInstaller workspace={workspace} onNotice={setNotice} />
     <main className="workspace">
       {libraryOpen && <LibraryPanel state={state} disabled={disabled} onClose={() => setLibraryOpen(false)} onOpen={(id) => void act(() => open(id))}
         onCreate={() => void act(async () => { const created = await workspace.run('create_diagram') as DiagramMeta; await open(created.id); })}
@@ -127,7 +146,10 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
           editorContainer.current?.querySelector<HTMLElement>('.excalidraw')?.focus({ preventScroll: true });
         }} />
         <div ref={editorContainer} className="canvas-editor">
-        <Excalidraw key={state.editorEpoch} excalidrawAPI={setAPI} initialData={initialData} theme="light" name={state.active.name} aiEnabled={false}
+        <Excalidraw key={state.editorEpoch} excalidrawAPI={setAPI} initialData={{ ...initialData, libraryItems: workspace.customShapes.items }} theme="light" name={state.active.name} aiEnabled={false}
+          libraryReturnUrl={shapeLibraryReturnURL()} onLibraryChange={items => { void workspace.onCustomShapesChange(items).catch(error => {
+            if (!(error instanceof CommandError && error.code === 'storage_error')) setUIError((error as Error).message);
+          }); }}
           UIOptions={{ canvasActions: { loadScene: false, saveToActiveFile: false, toggleTheme: false, export: { saveFileToDisk: true } } }}>
           <MainMenu />
           {/* Keep native actions inside the editor context while displaying them beside the document title. */}
@@ -135,8 +157,9 @@ function WorkspaceView({ workspace }: { workspace: Workspace }) {
             onRename={() => { titleInput.current?.focus(); titleInput.current?.select(); }}
             onDuplicate={() => void act(async () => { const copy = await manage(state.active, 'duplicate') as DiagramMeta; await open(copy.id); })}
             onTrash={() => void act(() => manage(state.active, 'trash'))} />, documentMenuHost)}
-          <DefaultSidebar.Trigger tab="library" title="Custom Shapes" icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1" /><circle cx="17.5" cy="6.5" r="3.5" /><path d="m6.5 14 4 7h-8z" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>}>Custom Shapes</DefaultSidebar.Trigger>
-          <DefaultSidebar.TabTriggers><span className="custom-shapes-heading">Custom Shapes</span></DefaultSidebar.TabTriggers>
+          <DefaultSidebar className="custom-shapes-sidebar"><CustomShapeStorage library={workspace.customShapes} /></DefaultSidebar>
+          <DefaultSidebar.Trigger tab="library" title="Custom Shapes" icon={<CustomShapesIcon />}>Custom Shapes</DefaultSidebar.Trigger>
+          <DefaultSidebar.TabTriggers><span className="custom-shapes-heading" role="heading" aria-level={2}><CustomShapesIcon />Custom Shapes</span></DefaultSidebar.TabTriggers>
           <WelcomeScreen>
             <WelcomeScreen.Center>
               <div className="canvas-welcome">
