@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { MainMenu } from '@excalidraw/excalidraw';
 import { downloadFile, MAX_LIBRARY_BYTES, type DiagramMeta } from './scene';
 import type { Workspace } from './workspace';
+import { estimatedStorageBytes, formatStorageSize } from './size';
 
 type Artifact = { artifactId: string; filename: string; mimeType: string; encoding: 'utf8' | 'base64'; data: string; nextOffset: number | null };
 
@@ -109,6 +110,7 @@ export function LibraryPanel({ state, disabled, onClose, onCreate, onOpen, onMan
   const [trash, setTrash] = useState(false);
   const [search, setSearch] = useState('');
   const items = state.documents.filter((item) => !!item.deletedAt === trash && item.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+  const totalBytes = state.documents.reduce((total, item) => total + estimatedStorageBytes(item.storageSize), 0);
   return <aside id="diagrams-panel" className="library-panel" aria-label="Your diagrams">
     <div className="panel-heading"><div><p className="eyebrow">SAVED HERE</p><h2>Your diagrams</h2></div><button className="icon-button" aria-label="Close diagrams" onClick={onClose}>×</button></div>
     <button className="primary-button" disabled={disabled} onClick={onCreate}>New diagram <span aria-hidden="true">+</span></button>
@@ -116,13 +118,19 @@ export function LibraryPanel({ state, disabled, onClose, onCreate, onOpen, onMan
     <input className="library-search" aria-label="Search diagrams" placeholder="Search diagrams…" value={search} onChange={(event) => setSearch(event.target.value)} />
     <div className="library-tabs"><button aria-pressed={!trash} onClick={() => setTrash(false)}>Diagrams</button><button aria-pressed={trash} onClick={() => setTrash(true)}>Trash</button></div>
     <ul className="diagram-list">{items.map((item) => <li key={item.id} className={item.id === state.active.id ? 'active' : ''}>
-      <button className="diagram-open" disabled={disabled || trash} onClick={() => onOpen(item.id)} aria-current={item.id === state.active.id ? 'true' : undefined}><strong>{item.name}</strong><span>{item.id === state.active.id ? 'Open now' : new Date(item.updatedAt).toLocaleDateString()}</span></button>
+      <button className="diagram-open" disabled={disabled || trash} onClick={() => onOpen(item.id)} aria-current={item.id === state.active.id ? 'true' : undefined}>
+        <strong>{item.name}</strong>
+        <span className="diagram-meta"><span>{item.id === state.active.id ? 'Open now' : new Date(item.updatedAt).toLocaleDateString()}</span>
+          <span className="diagram-size" aria-label={`Estimated storage: ${formatStorageSize(estimatedStorageBytes(item.storageSize))}`} title="Estimated storage, including embedded images, metadata and the previous save. Browser database overhead is not included.">~{formatStorageSize(estimatedStorageBytes(item.storageSize))}</span>
+        </span>
+      </button>
       <div className="diagram-actions">{trash ? <button disabled={disabled} onClick={() => onManage(item, 'restore')}>Restore</button> : <><button disabled={disabled} onClick={() => onManage(item, 'duplicate')}>Duplicate</button><button disabled={disabled} onClick={() => onManage(item, 'trash')}>Trash</button></>}
         <button disabled={disabled} title="Restore the previous autosaved version" onClick={() => onManage(item, 'recover')}>Recover previous save</button>
       </div>
     </li>)}</ul>
     {!items.length && <p className="library-empty">{trash ? 'No diagrams in the trash.' : 'No matching diagrams.'}</p>}
     <div className="library-backup">
+      <p className="library-storage-summary" title="Includes all saved diagrams, previous saves and trash. Browser database overhead is not included."><span>Estimated storage</span><span data-testid="library-storage-total">~{formatStorageSize(totalBytes)}</span></p>
       <button className="secondary-button" disabled={disabled} onClick={onBackup}>Back up all diagrams</button>
       <p className="library-footnote">Saved on this device in this browser. Back up your diagrams to take them with you. Import accepts diagrams and full backups.</p>
     </div>

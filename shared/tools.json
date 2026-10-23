@@ -874,7 +874,7 @@
     }
   },
   "list_diagrams": {
-    "description": "List the browser library and active diagram ID/revision. Include trash to find deleted diagrams for restoration.",
+    "description": "List the browser library and active diagram ID/revision. Each diagram includes storageSize estimates in bytes: sceneBytes (including embedded images), recoveryBytes (previous save), and metadataBytes. Sum these for its estimated saved data size; browser database overhead is excluded. Include trash to find deleted diagrams for restoration and account for their storage.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,

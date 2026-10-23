@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { connectAgent } from './connection-helpers';
+import { estimatedStorageBytes, formatStorageSize } from '../src/library/size';
 
 let client: Client;
 let errors: string[];
@@ -72,12 +73,111 @@ const empty = JSON.stringify({ type: 'excalidraw', version: 2, elements: [], app
 async function stored(page: Page, id: string) {
   return page.evaluate(async (key) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open('diagrams'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
-    const tx = db.transaction(['diagrams', 'scenes']);
+    const tx = db.transaction(['diagrams', 'scenes', 'recovery']);
     const get = (store: string) => new Promise<any>((resolve) => { const r = tx.objectStore(store).get(key); r.onsuccess = () => resolve(r.result); });
-    const [meta, scene] = await Promise.all([get('diagrams'), get('scenes')]); db.close();
-    return { meta, scene };
+    const [meta, scene, recovery] = await Promise.all([get('diagrams'), get('scenes'), get('recovery')]); db.close();
+    return { meta, scene, recovery };
   }, id);
 }
+
+function measuredSize(disk: Awaited<ReturnType<typeof stored>>) {
+  const { storageSize: _size, ...meta } = disk.meta;
+  return {
+    sceneBytes: Buffer.byteLength(JSON.stringify(disk.scene)),
+    recoveryBytes: disk.recovery === undefined ? 0 : Buffer.byteLength(JSON.stringify(disk.recovery)),
+    metadataBytes: Buffer.byteLength(JSON.stringify(meta)),
+  };
+}
+
+test('storage estimates include images, recovery and trash without opening diagrams', async ({ page }, info) => {
+  await connect(page);
+  const active = await sample();
+  const scene = JSON.parse((await exported('export_diagram', { diagramId: active.diagramId })).data);
+  const dataURL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
+  scene.files.pixel = { id: 'pixel', mimeType: 'image/png', dataURL, created: 1 };
+  scene.elements.push({ ...scene.elements.find((e: any) => e.id === 'box'), id: 'image', type: 'image', x: 450, y: 430, width: 50, height: 50, boundElements: [], fileId: 'pixel', status: 'saved', scale: [1, 1], crop: null, customData: { note: '🌿'.repeat(20_000) } });
+  const imported = await call('import_diagram', { data: JSON.stringify(scene), name: 'Image diagram 🌿' });
+  const initial = await stored(page, imported.id);
+  expect(initial.meta.storageSize).toEqual(measuredSize(initial));
+  expect(initial.meta.storageSize.sceneBytes).toBeGreaterThan(80_000);
+  expect(initial.meta.storageSize.recoveryBytes).toBe(0);
+  const copy = await call('manage_diagram', { diagramId: imported.id, expectedRevision: imported.revision, action: 'duplicate', name: 'Image copy' });
+  const copied = await stored(page, copy.id);
+  expect(copied.meta.storageSize).toEqual(measuredSize(copied));
+  expect(copied.meta.storageSize.sceneBytes).toBe(initial.meta.storageSize.sceneBytes);
+
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
+  const panel = page.getByRole('complementary', { name: 'Your diagrams' });
+  const row = panel.locator('li').filter({ has: page.getByText('Image diagram 🌿', { exact: true }) });
+  await expect(row.locator('.diagram-size')).toHaveText(`~${formatStorageSize(estimatedStorageBytes(initial.meta.storageSize))}`);
+  expect((await call('get_diagram')).diagramId).toBe(active.diagramId);
+
+  const replaced = await call('import_diagram', { data: empty, replaceDiagramId: imported.id, expectedRevision: imported.revision });
+  const replacement = await stored(page, imported.id);
+  expect(replacement.meta.storageSize).toEqual(measuredSize(replacement));
+  expect(replacement.meta.storageSize.recoveryBytes).toBe(initial.meta.storageSize.sceneBytes);
+  const recovered = await call('manage_diagram', { diagramId: imported.id, expectedRevision: replaced.revision, action: 'recover' });
+  const recovery = await stored(page, imported.id);
+  expect(recovery.meta.storageSize).toEqual(measuredSize(recovery));
+  expect(recovery.meta.storageSize.sceneBytes).toBe(initial.meta.storageSize.sceneBytes);
+  expect(recovery.meta.storageSize.recoveryBytes).toBe(initial.meta.storageSize.sceneBytes);
+  await call('manage_diagram', { diagramId: imported.id, expectedRevision: recovered.revision, action: 'trash' });
+  const trashed = await stored(page, imported.id);
+  expect(trashed.meta.storageSize).toEqual(measuredSize(trashed));
+  await expect(row).toHaveCount(0);
+  const all = (await call('list_diagrams', { includeTrash: true })).diagrams;
+  const total = all.reduce((sum: number, item: any) => sum + estimatedStorageBytes(item.storageSize), 0);
+  await expect(panel.getByTestId('library-storage-total')).toHaveText(`~${formatStorageSize(total)}`);
+  await panel.getByLabel('Search diagrams').fill('Image copy');
+  await expect(panel.locator('.diagram-list li')).toHaveCount(1);
+  await expect(panel.getByTestId('library-storage-total')).toHaveText(`~${formatStorageSize(total)}`);
+  await panel.getByLabel('Search diagrams').fill('');
+  await panel.locator('.library-tabs').getByRole('button', { name: 'Trash', exact: true }).click();
+  await expect(row.locator('.diagram-size')).toHaveText(`~${formatStorageSize(estimatedStorageBytes(trashed.meta.storageSize))}`);
+  await row.getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(row).toHaveCount(0);
+  expect((await stored(page, imported.id)).meta.storageSize.recoveryBytes).toBe(initial.meta.storageSize.sceneBytes);
+
+  await page.reload(); await connect(page, false);
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
+  const saved = await stored(page, imported.id);
+  expect(saved.meta.storageSize).toEqual(measuredSize(saved));
+  await expect(row.locator('.diagram-size')).toHaveText(`~${formatStorageSize(estimatedStorageBytes(saved.meta.storageSize))}`);
+  expect((await call('get_diagram')).diagramId).toBe(active.diagramId);
+  await page.screenshot({ path: info.outputPath('storage-sidebar.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(row.locator('.diagram-size')).toBeInViewport();
+  await page.screenshot({ path: info.outputPath('storage-sidebar-mobile.png') });
+});
+
+test('storage estimates cover older diagrams without rewriting or opening them', async ({ page }) => {
+  await connect(page);
+  const active = await sample();
+  const copy = await call('manage_diagram', { diagramId: active.diagramId, expectedRevision: active.revision, action: 'duplicate', name: 'Older diagram' });
+  await call('import_diagram', { data: empty, replaceDiagramId: copy.id, expectedRevision: copy.revision });
+  const before = await stored(page, copy.id);
+  delete before.meta.storageSize;
+  await page.evaluate(async (id) => {
+    const db = await new Promise<IDBDatabase>((resolve) => { const r = indexedDB.open('diagrams'); r.onsuccess = () => resolve(r.result); });
+    const tx = db.transaction('diagrams', 'readwrite');
+    const done = new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onabort = () => reject(tx.error); });
+    const r = tx.objectStore('diagrams').get(id);
+    r.onsuccess = () => { const meta = r.result; delete meta.storageSize; tx.objectStore('diagrams').put(meta, id); };
+    await done; db.close();
+  }, copy.id);
+  await page.reload(); await connect(page, false);
+  const listed = (await call('list_diagrams')).diagrams.find((item: any) => item.id === copy.id);
+  expect(listed.storageSize).toEqual(measuredSize(before));
+  expect(await stored(page, copy.id)).toEqual(before);
+  expect((await call('get_diagram')).diagramId).toBe(active.diagramId);
+  await page.getByRole('banner').getByRole('button', { name: 'Diagrams', exact: true }).click();
+  const row = page.locator('.diagram-list li').filter({ has: page.getByText('Older diagram', { exact: true }) });
+  await expect(row.locator('.diagram-size')).toHaveText(`~${formatStorageSize(estimatedStorageBytes(listed.storageSize))}`);
+  await call('manage_diagram', { diagramId: copy.id, expectedRevision: listed.revision, action: 'rename', name: 'Renamed older diagram 🌿' });
+  const saved = await stored(page, copy.id);
+  expect(saved.meta.storageSize).toEqual(measuredSize(saved));
+  expect(saved.meta.storageSize.recoveryBytes).toBe(listed.storageSize.recoveryBytes);
+});
 
 test('autosave survives reload, preserves bindings and rejects old revisions', async ({ page }) => {
   await connect(page);

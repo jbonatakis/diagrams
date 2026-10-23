@@ -129,11 +129,11 @@ export class Workspace {
       while (this.savedSerial !== this.serial) {
         const captured = this.current();
         const serial = this.serial;
-        if (byteLength(JSON.stringify(sceneFile(captured.scene))) > MAX_DOCUMENT_BYTES) throw new CommandError('document_too_large', 'This diagram exceeds the 16 MB save limit. Export it and reduce its image sizes.');
         this.status = 'saving'; this.notify();
         captured.updatedAt = new Date().toISOString();
         const version = await this.storage.save(captured, this.active.storageVersion);
         this.active.storageVersion = version;
+        this.active.storageSize = captured.storageSize;
         this.active.updatedAt = captured.updatedAt;
         this.active.scene = captured.scene;
         this.savedSerial = serial;

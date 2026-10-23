@@ -1,13 +1,24 @@
 import { CommandError } from '../protocol';
-import { parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene } from './scene';
+import { byteLength, MAX_DOCUMENT_BYTES, parseScene, sceneFile, type Diagram, type DiagramMeta, type Scene, type StorageSize } from './scene';
 
 const request = <T>(r: IDBRequest<T>) => new Promise<T>((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
 const completed = (tx: IDBTransaction) => new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onabort = tx.onerror = () => reject(tx.error ?? new Error('Storage transaction failed.')); });
+const jsonBytes = (value: unknown) => value === undefined ? 0 : byteLength(JSON.stringify(value));
+// Estimate the data itself; omit the size-accounting fields and database overhead.
+const metadataBytes = ({ storageSize: _size, ...meta }: DiagramMeta) => jsonBytes(meta);
+function sceneRecord(scene: Scene) {
+  const raw = sceneFile(scene);
+  const sceneBytes = jsonBytes(raw);
+  if (sceneBytes > MAX_DOCUMENT_BYTES) throw new CommandError('document_too_large', 'This diagram exceeds the 16 MB save limit. Export it and reduce its image sizes.');
+  parseScene(raw);
+  return { raw, sceneBytes };
+}
 export const storageError = (error: unknown) => error instanceof CommandError ? error : new CommandError('storage_error', error instanceof DOMException && error.name === 'QuotaExceededError'
   ? 'Browser storage is full. Your canvas is still open; export a backup, free space, then retry saving.'
   : 'Could not save to this browser. Your canvas is still open. Export a backup and retry saving.');
 
 export class DiagramStorage {
+  private measured = new Map<string, { version: number; size: StorageSize }>();
   private constructor(private db: IDBDatabase) {}
 
   static open() {
@@ -21,7 +32,22 @@ export class DiagramStorage {
   }
 
   async list(): Promise<DiagramMeta[]> {
-    return request(this.db.transaction('diagrams').objectStore('diagrams').getAll());
+    const metas: DiagramMeta[] = await request(this.db.transaction('diagrams').objectStore('diagrams').getAll());
+    // Older diagrams are measured once per session, one at a time to avoid
+    // loading the whole library's scenes into memory. Their next save persists
+    // the counts; listing alone never needs to write to a potentially full DB.
+    for (const meta of metas) {
+      if (meta.storageSize) continue;
+      let cached = this.measured.get(meta.id);
+      if (cached?.version !== meta.storageVersion) {
+        const tx = this.db.transaction(['scenes', 'recovery']);
+        const [scene, recovery] = await Promise.all([request(tx.objectStore('scenes').get(meta.id)), request(tx.objectStore('recovery').get(meta.id))]);
+        cached = { version: meta.storageVersion, size: { sceneBytes: jsonBytes(scene), recoveryBytes: jsonBytes(recovery), metadataBytes: metadataBytes(meta) } };
+        this.measured.set(meta.id, cached);
+      }
+      meta.storageSize = cached!.size;
+    }
+    return metas;
   }
 
   async get(id: string): Promise<Diagram> {
@@ -39,11 +65,12 @@ export class DiagramStorage {
   }
 
   async save(diagram: Diagram, expectedVersion: number, recovery = true) {
-    const raw = sceneFile(diagram.scene);
-    parseScene(raw);
+    const { raw, sceneBytes } = sceneRecord(diagram.scene);
     const tx = this.db.transaction(['diagrams', 'scenes', 'recovery'], 'readwrite');
     const done = completed(tx);
     const { scene, ...meta } = diagram;
+    const next = { ...meta, storageVersion: expectedVersion + 1 };
+    let size: StorageSize;
     let failure: unknown;
     const get = tx.objectStore('diagrams').get(meta.id);
     get.onsuccess = () => {
@@ -53,23 +80,45 @@ export class DiagramStorage {
         tx.abort(); return;
       }
       try {
+        const write = (recoveryBytes: number) => {
+          size = { sceneBytes, recoveryBytes, metadataBytes: metadataBytes(next) };
+          tx.objectStore('diagrams').put({ ...next, storageSize: size }, meta.id);
+          tx.objectStore('scenes').put(raw, meta.id);
+        };
+        const keepRecovery = () => {
+          if (previous?.storageSize) { write(previous.storageSize.recoveryBytes); return; }
+          const oldRecovery = tx.objectStore('recovery').get(meta.id);
+          oldRecovery.onsuccess = () => {
+            try { write(jsonBytes(oldRecovery.result)); }
+            catch (error) { failure = error; tx.abort(); }
+          };
+        };
         if (recovery && previous && previous.revision !== meta.revision) {
           const oldScene = tx.objectStore('scenes').get(meta.id);
           oldScene.onsuccess = () => {
-            try { if (oldScene.result) tx.objectStore('recovery').put(oldScene.result, meta.id); }
+            try {
+              if (oldScene.result) {
+                tx.objectStore('recovery').put(oldScene.result, meta.id);
+                write(jsonBytes(oldScene.result));
+              } else keepRecovery();
+            }
             catch (error) { failure = error; tx.abort(); }
           };
-        }
-        tx.objectStore('diagrams').put({ ...meta, storageVersion: expectedVersion + 1 }, meta.id);
-        tx.objectStore('scenes').put(raw, meta.id);
+        } else keepRecovery();
       } catch (error) { failure = error; tx.abort(); }
     };
     try { await done; } catch (error) { throw storageError(failure ?? error); }
+    diagram.storageSize = size!;
+    this.measured.delete(meta.id);
     return expectedVersion + 1;
   }
 
   async insert(diagrams: Diagram[]) {
-    const records = diagrams.map(({ scene, ...meta }) => { const raw = sceneFile(scene); parseScene(raw); return { meta, raw }; });
+    const records = diagrams.map(({ scene, ...meta }) => {
+      const { raw, sceneBytes } = sceneRecord(scene);
+      const next = { ...meta, storageVersion: 1 };
+      return { meta: { ...next, storageSize: { sceneBytes, recoveryBytes: 0, metadataBytes: metadataBytes(next) } }, raw };
+    });
     const tx = this.db.transaction(['diagrams', 'scenes'], 'readwrite');
     const done = completed(tx);
     let failure: unknown;
@@ -80,6 +129,7 @@ export class DiagramStorage {
       }
     } catch (error) { failure = error; tx.abort(); }
     try { await done; } catch (error) { throw storageError(failure ?? error); }
+    records.forEach(({ meta }, index) => { diagrams[index].storageSize = meta.storageSize; });
   }
 
   async activeId(): Promise<string | undefined> { return request(this.db.transaction('settings').objectStore('settings').get('active')); }
