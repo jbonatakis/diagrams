@@ -6,6 +6,8 @@ export type Element = ExcalidrawElement;
 export type Skeleton = NonNullable<Parameters<typeof convertToExcalidrawElements>[0]>[number];
 export const isShape = (e: Element): e is Extract<Element, { type: 'rectangle' | 'ellipse' | 'diamond' }> => ['rectangle', 'ellipse', 'diamond'].includes(e.type);
 export const isArrow = (e: Element): e is ExcalidrawArrowElement => e.type === 'arrow';
+export const isFrame = (e: Element) => e.type === 'frame' || e.type === 'magicframe';
+export const isFrameBackground = (e: Element) => e.type === 'rectangle' && !!e.frameId && e.customData?.diagramsFrameBackground === true;
 export const isLinear = (e: Element) => e.type === 'line' || e.type === 'arrow';
 export const center = (e: Element): [number, number] => [e.x + e.width / 2, e.y + e.height / 2];
 
@@ -32,13 +34,36 @@ export function bounds(elements: readonly Element[], targets = elements) {
 }
 export function withLabels(elements: readonly Element[], ids: readonly string[]) {
   const selected = new Set(ids);
-  for (const id of ids) required(elements, id);
+  const liveIDs = new Set(elements.filter(e => !e.isDeleted).map(e => e.id));
+  for (const id of ids) if (!liveIDs.has(id)) required(elements, id);
   for (const e of elements) if (!e.isDeleted && e.type === 'text' && e.containerId && selected.has(e.containerId)) selected.add(e.id);
   return selected;
 }
+export function withFrameContents(elements: readonly Element[], ids: readonly string[]) {
+  const selected = new Set(ids);
+  const frames = new Set(ids.filter(id => isFrame(required(elements, id))));
+  if (elements.some(e => !e.isDeleted && isFrame(e) && e.frameId && (frames.has(e.id) || frames.has(e.frameId)))) {
+    throw new CommandError('nested_frame', 'Nested frames are unsupported. Separate them in the editor before editing them with these operations.');
+  }
+  for (const e of elements) if (!e.isDeleted && e.frameId && frames.has(e.frameId)) selected.add(e.id);
+  return withLabels(elements, [...selected]);
+}
+export function withGroups(elements: readonly Element[], ids: readonly string[]) {
+  let selected = withLabels(elements, ids);
+  // Expand transitively for imported/nested groups and their bound labels.
+  while (true) {
+    const groups = new Set(elements.filter(e => !e.isDeleted && selected.has(e.id)).flatMap(e => [...e.groupIds]));
+    const next = withLabels(elements, elements.filter(e => !e.isDeleted && (selected.has(e.id) || e.groupIds.some(g => groups.has(g)))).map(e => e.id));
+    if (next.size === selected.size) return next;
+    selected = next;
+  }
+}
+export function carriedBackground(e: Element, selected: ReadonlySet<string>) {
+  return isFrameBackground(e) && selected.has(e.frameId!);
+}
 export function selectedElements(elements: readonly Element[], ids?: readonly string[]) {
   if (!ids) return elements.filter(e => !e.isDeleted);
-  const selected = withLabels(elements, ids);
+  const selected = withFrameContents(elements, ids);
   return elements.filter(e => !e.isDeleted && selected.has(e.id));
 }
 export function labelOf(elements: readonly Element[], id: string): ExcalidrawTextElement | undefined {

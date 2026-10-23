@@ -26,7 +26,13 @@ export type ElementChanges = Style & TextStyle & {
   startArrowhead?: Arrowhead; endArrowhead?: Arrowhead; routing?: 'straight' | 'elbow';
 };
 export type MoveOperation = { op: 'move'; id: string; x: number; y: number };
+export type CreateFrameOperation = { op: 'create_frame'; id: string; ids: string[]; name?: string; padding?: number; background?: string };
+export type UpdateFrameOperation = { op: 'update_frame'; id: string; name?: string; padding?: number; background?: string | null };
 export type Operation = ShapeOperation | ConnectOperation | TextOperation | LineOperation | MoveOperation
+  | CreateFrameOperation | UpdateFrameOperation
+  | { op: 'remove_frame'; id: string }
+  | { op: 'set_background'; color: string }
+  | { op: 'reorder'; ids: string[]; position: 'front' | 'back' | 'forward' | 'backward' }
   | { op: 'update'; id: string; changes: ElementChanges }
   | { op: 'delete'; ids: string[] }
   | { op: 'duplicate'; ids: string[]; idPrefix: string; dx?: number; dy?: number }

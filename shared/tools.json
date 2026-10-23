@@ -1,6 +1,6 @@
 {
   "get_diagram": {
-    "description": "Read the active diagram ID, revision, name, save status, selection, viewport, and simplified elements including group IDs, original text, rendered labels, and line geometry. Coordinates are scene units and angles are radians. Call before editing; the browser must remain connected.",
+    "description": "Read the active diagram ID, revision, name, save status, selection, viewport, and simplified elements including group IDs, original text, rendered labels, and line geometry. Coordinates are scene units and angles are radians. Call before editing; the browser must remain connected. Elements are ordered back-to-front and include frameId. Frames include name, memberIds (bound labels and managed background excluded) and backgroundId; read that rectangle's fill for the frame color. backgroundColor is the canvas color.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -8,7 +8,7 @@
     }
   },
   "apply_operations": {
-    "description": "Atomically create, edit, organize, or delete canvas elements. Each operation is a flat object with an op field (not type). Basic example: {\"op\":\"create_shape\",\"id\":\"box-1\",\"shape\":\"rectangle\",\"x\":100,\"y\":100}. create_shape accepts only rectangle, ellipse or diamond. For imported library shapes, call list_custom_shapes then the dedicated insert_custom_shape tool, or include {\"op\":\"insert_custom_shape\",\"shapeId\":\"ID_FROM_LIST\",\"idPrefix\":\"copy-1\",\"x\":100,\"y\":100} in this batch. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes.",
+    "description": "Atomically create, edit, organize, or delete canvas elements. Each operation is a flat object with an op field (not type). Basic example: {\"op\":\"create_shape\",\"id\":\"box-1\",\"shape\":\"rectangle\",\"x\":100,\"y\":100}. create_shape accepts only rectangle, ellipse or diamond. For imported library shapes, call list_custom_shapes then the dedicated insert_custom_shape tool, or include {\"op\":\"insert_custom_shape\",\"shapeId\":\"ID_FROM_LIST\",\"idPrefix\":\"copy-1\",\"x\":100,\"y\":100} in this batch. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes. Frames: {\"op\":\"create_frame\",\"id\":\"section\",\"ids\":[\"box-1\"],\"name\":\"Section\",\"padding\":40,\"background\":\"#e1e8e5\"}. Edit with {\"op\":\"update_frame\",\"id\":\"section\",\"background\":\"#f0f4f2\"}; remove_frame keeps contents. Canvas: {\"op\":\"set_background\",\"color\":\"#fcfcf9\"}. Layers: {\"op\":\"reorder\",\"ids\":[\"section\"],\"position\":\"back\"}; positions are front, back, forward, backward.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -438,7 +438,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Move an element, its label, and attached connectors. Use translate for a group of elements.",
+                "description": "Move an element, its label, and attached connectors. Use translate for a group of elements. Moving a frame moves all its contents and managed background.",
                 "required": [
                   "op",
                   "id",
@@ -469,7 +469,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Edit geometry, text/label, and styling. Set text to empty to remove a label. Text height is measured automatically. Set fromId/toId to null to detach an arrow end. Elbow arrows cannot be rotated.",
+                "description": "Edit geometry, text/label, and styling. Set text to empty to remove a label. Text height is measured automatically. Set fromId/toId to null to detach an arrow end. Elbow arrows cannot be rotated. For frames use update_frame (name/padding/background) or move/translate (position).",
                 "required": [
                   "op",
                   "id",
@@ -639,7 +639,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Delete selected elements, their labels, and incident arrows. One undo restores all of them.",
+                "description": "Delete selected elements, their labels, and incident arrows. One undo restores all of them. Selecting a frame deletes its contents and managed background too. Use remove_frame to keep the contents.",
                 "required": [
                   "op",
                   "ids"
@@ -664,7 +664,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Duplicate elements, labels, and arrows connecting selected shapes. Defaults to offset 40,40. New IDs use idPrefix-1, idPrefix-2, etc. Returns source-to-copy mappings. External bindings are detached; groups are copied with new IDs.",
+                "description": "Duplicate elements, labels, and arrows connecting selected shapes. Defaults to offset 40,40. New IDs use idPrefix-1, idPrefix-2, etc. Returns source-to-copy mappings. External bindings are detached; groups are copied with new IDs. Selecting a frame includes its children and managed background.",
                 "required": [
                   "op",
                   "ids",
@@ -704,7 +704,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Group elements and labels using a fresh groupId. Include all members of existing groups to nest them.",
+                "description": "Group elements and labels using a fresh groupId. Include all members of existing groups to nest them. All members must be in the same frame (or all unframed); frames themselves cannot be grouped by this operation.",
                 "required": [
                   "op",
                   "ids",
@@ -759,7 +759,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Move multiple elements by the same offset. Labels move with containers; attached arrows update once.",
+                "description": "Move multiple elements by the same offset. Labels move with containers; attached arrows update once. Frames include their contents and managed background, moved once even if also listed explicitly.",
                 "required": [
                   "op",
                   "ids",
@@ -898,6 +898,178 @@
                     "maximum": 1000000
                   }
                 }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Wrap existing content in a native frame. Expands whole groups and bound labels, includes arrows between selected shapes, and fits bounds with padding (default 40). Content already in a frame and nested frames are rejected. Optional background creates a managed rectangle behind the contents. Frame, contents and background move or duplicate together.",
+                "required": [
+                  "op",
+                  "id",
+                  "ids"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "create_frame"
+                  },
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9_-]{1,80}$"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 1,
+                    "maxItems": 1000,
+                    "uniqueItems": true
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "padding": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 10000,
+                    "description": "Space around content in scene units. Setting padding refits the frame; it does not scale its contents."
+                  },
+                  "background": {
+                    "type": "string",
+                    "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Rename a frame, refit it around its current contents by setting padding, or change its managed background. background:null removes only that background. Move the frame with move/translate; its children follow. Does not resize the contents.",
+                "required": [
+                  "op",
+                  "id"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "update_frame"
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "name": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "padding": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 10000,
+                    "description": "Space around content in scene units. Setting padding refits the frame; it does not scale its contents."
+                  },
+                  "background": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "anyOf": [
+                  {
+                    "required": [
+                      "name"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "padding"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "background"
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Remove the frame and its managed background, keeping the contents and their groups/bindings. Use delete with the frame ID to delete its contents as well.",
+                "required": [
+                  "op",
+                  "id"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "remove_frame"
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Set the entire canvas background color. This participates in the same atomic batch and native undo as element edits.",
+                "required": [
+                  "op",
+                  "color"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "set_background"
+                  },
+                  "color": {
+                    "type": "string",
+                    "pattern": "^(transparent|#[0-9a-fA-F]{6})$"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Change stacking order, preserving groups, labels, and whole frames. front/back moves to an end; forward/backward moves one stacking unit. Within a frame, only its contents are reordered, above its managed background. To move a frame on the canvas select its ID. Mixing children from different frames, or children with unframed content, is rejected.",
+                "required": [
+                  "op",
+                  "ids",
+                  "position"
+                ],
+                "properties": {
+                  "op": {
+                    "const": "reorder"
+                  },
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "minItems": 1,
+                    "maxItems": 1000,
+                    "uniqueItems": true
+                  },
+                  "position": {
+                    "enum": [
+                      "front",
+                      "back",
+                      "forward",
+                      "backward"
+                    ]
+                  }
+                }
               }
             ]
           }
@@ -1029,14 +1201,26 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "diagramId": { "type": "string", "minLength": 1, "maxLength": 100 },
-              "expectedRevision": { "type": "integer", "minimum": 0 }
+              "diagramId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "expectedRevision": {
+                "type": "integer",
+                "minimum": 0
+              }
             },
-            "required": ["diagramId", "expectedRevision"]
+            "required": [
+              "diagramId",
+              "expectedRevision"
+            ]
           }
         }
       },
-      "required": ["diagrams"]
+      "required": [
+        "diagrams"
+      ]
     }
   },
   "export_diagram": {

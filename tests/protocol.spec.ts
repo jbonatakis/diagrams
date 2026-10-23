@@ -63,3 +63,26 @@ test('custom shape previews allow browsing or explicit IDs, with bounded image a
     { shapeIds: ['one'], query: 'server' }, { shapeIds: ['one'], offset: 0 }, { shapeIds: ['one'], limit: 1 },
   ]) invalid('preview_custom_shapes', args);
 });
+
+test('frame and layer operations validate their fields and report actionable errors', () => {
+  for (const operation of [
+    { op: 'create_frame', id: 'section', ids: ['box'], name: 'Server', padding: 40, background: '#e1e8e5' },
+    { op: 'update_frame', id: 'section', background: null },
+    { op: 'update_frame', id: 'section', padding: 0, name: '' },
+    { op: 'remove_frame', id: 'section' },
+    { op: 'set_background', color: '#ffffff' },
+    ...['front', 'back', 'forward', 'backward'].map(position => ({ op: 'reorder', ids: ['section'], position })),
+  ]) expect(() => validateArguments('apply_operations', { ...target, operations: [operation] })).not.toThrow();
+  for (const operation of [
+    { op: 'create_frame', id: 'section', ids: [] },
+    { op: 'create_frame', id: 'section', ids: ['box'], padding: -1 },
+    { op: 'create_frame', id: 'section', ids: ['box'], background: null },
+    { op: 'update_frame', id: 'section' },
+    { op: 'update_frame', id: 'section', width: 200 },
+    { op: 'set_background', color: 'var(--color)' },
+    { op: 'reorder', ids: ['box', 'box'], position: 'front' },
+    { op: 'remove_frame', id: 'section', deleteContents: true },
+  ]) invalid('apply_operations', { ...target, operations: [operation] });
+  expect(invalid('apply_operations', { ...target, operations: [{ op: 'reorder', ids: ['box'], position: 'top' }] }))
+    .toContain('"front", "back", "forward", "backward"');
+});

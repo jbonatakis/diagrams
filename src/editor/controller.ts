@@ -4,7 +4,7 @@ import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 import { flushSync } from 'react-dom';
 import { CommandError, validateArguments, type ApplyArguments, type Command, type ViewArguments } from '../protocol';
 import { planOperations } from './operations';
-import { bounds, isArrow, selectedElements } from './elements';
+import { bounds, isArrow, isFrame, isFrameBackground, selectedElements } from './elements';
 import { worldPoints } from './connectors';
 import { encodePreview } from './preview';
 import { savedAppState, type Diagram, type Scene } from '../library/scene';
@@ -95,8 +95,14 @@ export class DiagramController {
     this.observe();
     const elements = this.api.getSceneElements();
     const byId = new Map(elements.map((element) => [element.id, element]));
+    const frameMembers = new Map<string, ExcalidrawElement[]>();
+    for (const e of elements) if (e.frameId && !(e.type === 'text' && e.containerId)) {
+      const members = frameMembers.get(e.frameId) ?? [];
+      members.push(e); frameMembers.set(e.frameId, members);
+    }
     return {
       diagramId: this.diagramId, revision: this.revision,
+      backgroundColor: this.api.getAppState().viewBackgroundColor,
       selectedElementIds: Object.keys(this.api.getAppState().selectedElementIds).filter(id => byId.has(id)),
       viewport: { scrollX: this.api.getAppState().scrollX, scrollY: this.api.getAppState().scrollY, zoom: this.api.getAppState().zoom.value },
       elements: elements.filter((item) => !(item.type === 'text' && item.containerId)).map((item) => {
@@ -104,7 +110,12 @@ export class DiagramController {
         const label = textId ? byId.get(textId) : undefined;
         return {
           id: item.id, type: item.type, x: item.x, y: item.y, width: item.width, height: item.height,
-          angle: item.angle, locked: item.locked,
+          angle: item.angle, locked: item.locked, frameId: item.frameId,
+          ...(isFrame(item) ? {
+            name: item.name,
+            memberIds: (frameMembers.get(item.id) ?? []).filter(e => !isFrameBackground(e)).map(e => e.id),
+            backgroundId: frameMembers.get(item.id)?.find(isFrameBackground)?.id ?? null,
+          } : {}),
           label: item.type === 'text' ? item.text : label?.type === 'text' ? label.text : undefined,
           text: item.type === 'text' ? item.originalText : label?.type === 'text' ? label.originalText : undefined,
           fontSize: item.type === 'text' ? item.fontSize : label?.type === 'text' ? label.fontSize : undefined,
@@ -159,10 +170,14 @@ export class DiagramController {
     this.observe();
     if (args.diagramId !== this.diagramId) throw new CommandError('diagram_changed', 'This is a different browser diagram. Call get_diagram again.');
     if (args.expectedRevision !== this.revision) throw new CommandError('revision_conflict', `Expected revision ${args.expectedRevision}, current revision is ${this.revision}. Read the diagram and replan.`);
-    const { elements, copies } = planOperations(this.api.getSceneElementsIncludingDeleted(), args.operations, customShape);
+    const { elements, copies, backgroundColor } = planOperations(this.api.getSceneElementsIncludingDeleted(), args.operations, customShape);
     if (Date.now() > command.deadline) throw new CommandError('expired_request', 'The batch expired before commit. Read the diagram before trying again.');
     // Commit exactly once. Do not mutate scene objects or maintain a second history.
-    flushSync(() => this.api.updateScene({ elements, captureUpdate: CaptureUpdateAction.IMMEDIATELY }));
+    // Native index repair mutates its input. Keep the previous scene untouched so
+    // layer changes are also captured correctly by native history.
+    flushSync(() => this.api.updateScene({ elements: structuredClone(elements),
+      ...(backgroundColor === undefined ? {} : { appState: { viewBackgroundColor: backgroundColor } }),
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY }));
     this.observe();
     return { ...this.snapshot(), copies };
   }

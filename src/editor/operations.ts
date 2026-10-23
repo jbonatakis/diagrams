@@ -1,16 +1,18 @@
 import { convertToExcalidrawElements, getCommonBounds, newElementWith, restoreElements } from '@excalidraw/excalidraw';
 import type { ExcalidrawArrowElement } from '@excalidraw/excalidraw/element/types';
 import { CommandError, type ElementChanges, type Operation, type Point } from '../protocol';
-import { bounds, editable, isArrow, isLinear, isShape, measureText, newID, reflowLabel, required, style, withLabels, type Element, type Skeleton } from './elements';
+import { bounds, carriedBackground, editable, isArrow, isFrame, isFrameBackground, isLinear, isShape, measureText, newID, reflowLabel, required, style, withFrameContents, withLabels, type Element, type Skeleton } from './elements';
 import { geometry, makeArrow, repairReferences, routeArrow, updateAttached, worldPoints } from './connectors';
+import { canvasColor, createFrame, removeFrame, updateFrame } from './frames';
+import { normalizeFrames, reorder } from './layers';
 
 function replace(elements: Element[], element: Element) { return elements.map(e => e.id === element.id ? element : e); }
 function roots(elements: Element[], ids: string[]) { return ids.map(id => { const e = required(elements, id); editable(e); return e; }); }
 
 function translate(elements: Element[], ids: string[], dx: number, dy: number): Element[] {
   roots(elements, ids);
-  const selected = withLabels(elements, ids);
-  for (const e of elements) if (selected.has(e.id) && e.locked) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before moving it.');
+  const selected = withFrameContents(elements, ids);
+  for (const e of elements) if (selected.has(e.id) && e.locked && !carriedBackground(e, selected)) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before moving it.');
   let result = elements.map(e => selected.has(e.id) ? newElementWith(e, { x: e.x + dx, y: e.y + dy }) : e);
   // Containers carry labels. Arrows selected with their shapes are translated
   // once, then their endpoint geometry is recomputed from the final shape positions.
@@ -22,6 +24,7 @@ function translate(elements: Element[], ids: string[], dx: number, dy: number): 
 
 function update(elements: Element[], id: string, changes: ElementChanges): Element[] {
   const original = required(elements, id); editable(original);
+  if (isFrame(original)) throw new CommandError('unsupported_property', 'Use update_frame for frame name, padding, and background; use move or translate to move a frame and its contents.');
   const textKeys = ['text', 'fontSize', 'textAlign'].some(key => key in changes);
   const connectorKeys = ['fromId', 'toId', 'routing', 'startArrowhead', 'endArrowhead'].some(key => key in changes);
   if (connectorKeys && original.type !== 'arrow') throw new CommandError('unsupported_property', 'Endpoint bindings, routing, and arrowheads require an arrow.');
@@ -32,7 +35,7 @@ function update(elements: Element[], id: string, changes: ElementChanges): Eleme
   if (geometryKeys && !isShape(original) && !isLinear(original) && original.type !== 'text' && original.type !== 'image') throw new CommandError('unsupported_geometry', 'Resize and rotation support basic shapes, text, lines, arrows, and images. Use translate to move other elements.');
   if (original.type === 'arrow' && (changes.routing === 'elbow' || (original as ExcalidrawArrowElement).elbowed) && changes.angle !== undefined && changes.angle !== 0) throw new CommandError('unsupported_rotation', 'Elbow arrows keep horizontal and vertical segments. Rotate their shapes instead.');
   if (original.type === 'arrow' && (original.startBinding || original.endBinding) && changes.angle !== undefined && changes.angle !== 0) throw new CommandError('unsupported_rotation', 'Detach bound arrow endpoints before rotating the arrow.');
-  let next = newElementWith(original, { ...style(changes),
+  let next = newElementWith<Element>(original, { ...style(changes),
     ...(changes.x === undefined ? {} : { x: changes.x }), ...(changes.y === undefined ? {} : { y: changes.y }),
     ...(changes.width === undefined ? {} : { width: changes.width }), ...(changes.height === undefined ? {} : { height: changes.height }),
     ...(changes.angle === undefined ? {} : { angle: changes.angle as Element['angle'] }),
@@ -77,15 +80,15 @@ function update(elements: Element[], id: string, changes: ElementChanges): Eleme
 
 function remove(elements: Element[], ids: string[]) {
   roots(elements, ids);
-  const selected = withLabels(elements, ids);
+  const selected = withFrameContents(elements, ids);
   for (const e of elements) if (!e.isDeleted && e.type === 'arrow' && [e.startBinding?.elementId, e.endBinding?.elementId].some(id => id && selected.has(id))) selected.add(e.id);
   const all = withLabels(elements, [...selected]);
-  for (const e of elements) if (all.has(e.id) && e.locked) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before deleting it.');
+  for (const e of elements) if (all.has(e.id) && e.locked && !carriedBackground(e, all)) throw new CommandError('element_locked', 'Unlock ' + e.id + ' before deleting it.');
   return repairReferences(elements.map(e => all.has(e.id) ? newElementWith(e, { isDeleted: true }) : e));
 }
 
 function duplicate(elements: Element[], op: Extract<Operation, { op: 'duplicate' }>) {
-  const selected = withLabels(elements, op.ids);
+  const selected = withFrameContents(elements, op.ids);
   for (const e of elements) if (!e.isDeleted && e.type === 'arrow' && e.startBinding && e.endBinding && selected.has(e.startBinding.elementId) && selected.has(e.endBinding.elementId)) selected.add(e.id);
   const all = withLabels(elements, [...selected]);
   const source = elements.filter(e => !e.isDeleted && all.has(e.id));
@@ -108,6 +111,7 @@ function copyElements(elements: Element[], source: readonly Element[], idPrefix:
     return { ...copy, id: mapping.get(e.id)!, x: e.x + dx, y: e.y + dy,
       index: null, version: 1, versionNonce: Math.floor(Math.random() * 2 ** 31), updated: Date.now(), groupIds,
       frameId: remap(e.frameId), boundElements: e.boundElements?.filter(b => mapping.has(b.id)).map(b => ({ ...b, id: mapping.get(b.id)! })) ?? null,
+      ...(isFrameBackground(e) && !mapping.has(e.frameId!) ? { customData: { ...e.customData, diagramsFrameBackground: false } } : {}),
       ...(e.type === 'text' ? { containerId: remap(e.containerId) } : {}),
       ...(e.type === 'arrow' || e.type === 'line' ? {
         startBinding: e.startBinding && mapping.has(e.startBinding.elementId) ? { ...e.startBinding, elementId: mapping.get(e.startBinding.elementId)! } : null,
@@ -120,6 +124,7 @@ function copyElements(elements: Element[], source: readonly Element[], idPrefix:
 
 function organize(elements: Element[], operation: Extract<Operation, { op: 'align' | 'distribute' }>) {
   const selected = roots(elements, operation.ids);
+  if (selected.some(isFrame)) throw new CommandError('unsupported_geometry', 'Use move or translate to position frames with their contents.');
   const boxes = selected.map(e => ({ e, b: bounds(elements, [e]) }));
   const offsets = new Map<string, Point>();
   if (operation.op === 'align') {
@@ -154,9 +159,15 @@ function organize(elements: Element[], operation: Extract<Operation, { op: 'alig
 
 export function planOperations(current: readonly Element[], operations: Operation[], customShape?: (id: string) => readonly Element[]) {
   let elements = [...current];
+  let backgroundColor: string | undefined;
   const copies: { sourceId: string; id: string }[] = [];
   for (const operation of operations) {
     switch (operation.op) {
+      case 'create_frame': elements = createFrame(elements, operation); break;
+      case 'update_frame': elements = updateFrame(elements, operation); break;
+      case 'remove_frame': elements = removeFrame(elements, operation.id); break;
+      case 'set_background': backgroundColor = canvasColor(operation.color); break;
+      case 'reorder': elements = reorder(elements, operation); break;
       case 'insert_custom_shape': {
         if (!customShape) throw new CommandError('shape_not_found', 'Custom shapes are unavailable.');
         const source = customShape(operation.shapeId);
@@ -207,7 +218,8 @@ export function planOperations(current: readonly Element[], operations: Operatio
       case 'delete': elements = remove(elements, operation.ids); break;
       case 'duplicate': { const result = duplicate(elements, operation); elements = result.elements; copies.push(...result.copies); break; }
       case 'group': {
-        roots(elements, operation.ids);
+        const members = roots(elements, operation.ids);
+        if (members.some(isFrame) || new Set(members.map(e => e.frameId)).size > 1) throw new CommandError('mixed_frames', 'Group content within one frame, or unframed content. Frames themselves cannot be grouped by this operation.');
         if (elements.some(e => e.groupIds.includes(operation.groupId))) throw new CommandError('duplicate_group', 'Use a fresh groupId.');
         const ids = withLabels(elements, operation.ids);
         const existing = new Set(elements.filter(e => ids.has(e.id)).flatMap(e => [...e.groupIds]));
@@ -231,5 +243,5 @@ export function planOperations(current: readonly Element[], operations: Operatio
     if (e.isDeleted) continue;
     if (![e.x, e.y, e.width, e.height, e.angle].every(Number.isFinite) || Math.abs(e.x) > 1000000 || Math.abs(e.y) > 1000000 || e.width < 0 || e.height < 0 || e.width > 1000000 || e.height > 1000000) throw new CommandError('invalid_geometry', 'The edit exceeds the supported canvas coordinates.');
   }
-  return { elements, copies };
+  return { elements: normalizeFrames(elements), copies, backgroundColor };
 }
