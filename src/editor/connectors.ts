@@ -1,6 +1,6 @@
-import { convertToExcalidrawElements, newElementWith, restoreElements } from '@excalidraw/excalidraw';
-import type { ExcalidrawArrowElement } from '@excalidraw/excalidraw/element/types';
-import { CommandError, type ConnectOperation, type Point } from '../protocol';
+import { convertToExcalidrawElements, newElementWith, restoreElements, ROUNDNESS } from '@excalidraw/excalidraw';
+import type { ExcalidrawArrowElement, ExcalidrawLinearElement } from '@excalidraw/excalidraw/element/types';
+import { CommandError, type ConnectOperation, type LineOperation, type Point, type Routing } from '../protocol';
 import { center, isShape, isArrow, required, reflowLabel, style, type Element, type Skeleton } from './elements';
 
 export function worldPoints(e: Element): Point[] {
@@ -41,6 +41,52 @@ export function geometry(points: Point[]) {
   return { x, y, angle: 0 as Element['angle'], width: Math.max(...points.map(p => p[0])) - Math.min(...points.map(p => p[0])),
     height: Math.max(...points.map(p => p[1])) - Math.min(...points.map(p => p[1])),
     points: points.map(p => [p[0] - x, p[1] - y]) as ExcalidrawArrowElement['points'] };
+}
+
+// Excalidraw renders endpoint markers and bindings only on native arrows. A
+// plain line is upgraded in place: same ID, path, groups, frame and styling.
+export function asArrow(line: ExcalidrawLinearElement): ExcalidrawArrowElement {
+  if (line.type === 'arrow') return line as ExcalidrawArrowElement;
+  if (line.backgroundColor !== 'transparent' && line.points.length > 2) {
+    const [first, last] = [line.points[0], line.points[line.points.length - 1]];
+    // Excalidraw 0.18 treats endpoints within eight scene units as a closed path.
+    if (Math.hypot(first[0] - last[0], first[1] - last[1]) <= 8) {
+      throw new CommandError('filled_path', 'Open this filled path or clear its fill before adding endpoint markers or bindings.');
+    }
+  }
+  return { ...newElementWith(line, { type: 'arrow' }), elbowed: false } as ExcalidrawArrowElement;
+}
+
+export function setRouting(line: ExcalidrawLinearElement, routing: Routing): ExcalidrawLinearElement {
+  const wasElbow = line.type === 'arrow' && (line as ExcalidrawArrowElement).elbowed;
+  if (routing === 'elbow') line = asArrow(line);
+  const points = worldPoints(line);
+  return newElementWith(line, {
+    ...(routing === 'elbow' || wasElbow ? geometry([points[0], points[points.length - 1]]) : {}),
+    ...(line.type === 'arrow' ? { elbowed: routing === 'elbow', fixedSegments: null, startIsSpecial: false, endIsSpecial: false } : {}),
+    roundness: routing === 'curved' ? { type: ROUNDNESS.PROPORTIONAL_RADIUS } : null,
+  });
+}
+
+export function makeLine(op: LineOperation): ExcalidrawLinearElement {
+  const markers = [op.startArrowhead, op.endArrowhead].some(head => head && head !== 'none');
+  const type = op.kind ?? 'line';
+  const created = convertToExcalidrawElements([{ type, id: op.id, ...geometry(op.points),
+    strokeColor: '#536357', strokeWidth: 2, roughness: 0, ...style(op),
+    startArrowhead: op.startArrowhead === 'none' ? null : op.startArrowhead ?? null,
+    // Requesting a marker on a plain line must not add an unrequested arrowhead.
+    endArrowhead: op.endArrowhead === 'none' ? null : op.endArrowhead ?? (op.kind === 'arrow' ? 'arrow' : null),
+  } as Skeleton], { regenerateIds: false });
+  const [restored] = restoreElements(created, null, { repairBindings: false });
+  // The native line constructor clears arrowheads, even when supplied in the
+  // skeleton. Reapply them after construction before upgrading the line.
+  let line = newElementWith(restored as ExcalidrawLinearElement, { ...geometry(op.points),
+    startArrowhead: op.startArrowhead === 'none' ? null : op.startArrowhead ?? null,
+    endArrowhead: op.endArrowhead === 'none' ? null : op.endArrowhead ?? (op.kind === 'arrow' ? 'arrow' : null),
+  });
+  if (markers) line = asArrow(line);
+  if (op.routing) line = setRouting(line, op.routing);
+  return line.type === 'arrow' ? routeArrow([], line as ExcalidrawArrowElement) : line;
 }
 
 // Bind using the public constructor so subsequent human drags use native bindings.
@@ -97,6 +143,7 @@ export function makeArrow(elements: Element[], op: ConnectOperation): Excalidraw
   const points = op.routing === 'elbow' ? elbowPoints(a, b, horizontal) : [a, b];
   const [raw] = convertToExcalidrawElements([{
     type: 'arrow', id: op.id, ...geometry(points), elbowed: op.routing === 'elbow',
+    roundness: op.routing === 'curved' ? { type: ROUNDNESS.PROPORTIONAL_RADIUS } : null,
     strokeColor: '#536357', strokeWidth: 2, roughness: 0, ...style(op),
     startArrowhead: op.startArrowhead === 'none' ? null : op.startArrowhead ?? null,
     endArrowhead: op.endArrowhead === 'none' ? null : op.endArrowhead ?? 'arrow',

@@ -86,3 +86,18 @@ test('frame and layer operations validate their fields and report actionable err
   expect(invalid('apply_operations', { ...target, operations: [{ op: 'reorder', ids: ['box'], position: 'top' }] }))
     .toContain('"front", "back", "forward", "backward"');
 });
+
+test('every native endpoint marker is accepted on lines, connections and direct edits', () => {
+  const heads = ['none', 'arrow', 'triangle', 'bar', 'dot', 'circle', 'circle_outline', 'triangle_outline',
+    'diamond', 'diamond_outline', 'crowfoot_one', 'crowfoot_many', 'crowfoot_one_or_many'];
+  for (const head of heads) for (const routing of ['straight', 'curved', 'elbow']) {
+    for (const operation of [
+      { op: 'create_line', id: 'line', kind: 'line', points: [[0, 0], [100, 100], [200, 0]], startArrowhead: head, endArrowhead: head, routing },
+      { op: 'connect', id: 'link', fromId: 'a', toId: 'b', startArrowhead: head, endArrowhead: head, routing },
+      { op: 'update', id: 'existing-line', changes: { startArrowhead: head, endArrowhead: head, routing } },
+    ]) expect(() => validateArguments('apply_operations', { ...target, operations: [operation] })).not.toThrow();
+  }
+  const message = invalid('apply_operations', { ...target, operations: [{ op: 'update', id: 'line', changes: { endArrowhead: 'optional_many' } }] });
+  expect(message).toContain('crowfoot_many'); expect(message).toContain('circle_outline');
+  expect(message).not.toContain('fromId');
+});

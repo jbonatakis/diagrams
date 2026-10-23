@@ -1,4 +1,5 @@
 import Ajv, { type ErrorObject } from 'ajv';
+import type { Arrowhead as NativeArrowhead } from '@excalidraw/excalidraw/element/types';
 import definitions from '../shared/tools.json' with { type: 'json' };
 
 export type Point = [number, number];
@@ -8,22 +9,23 @@ export type Style = {
   opacity?: number; roughness?: number;
 };
 export type TextStyle = { fontSize?: number; textAlign?: 'left' | 'center' | 'right' };
-export type Arrowhead = 'none' | 'arrow' | 'triangle' | 'bar' | 'dot';
+export type Arrowhead = 'none' | NativeArrowhead;
+export type Routing = 'straight' | 'curved' | 'elbow';
 export type ShapeOperation = Style & TextStyle & {
   op: 'create_shape'; id: string; shape: 'rectangle' | 'ellipse' | 'diamond';
   x: number; y: number; width?: number; height?: number; angle?: number; label?: string;
 };
 export type ConnectOperation = Style & TextStyle & {
   op: 'connect'; id: string; fromId: string; toId: string;
-  label?: string; routing?: 'straight' | 'elbow';
+  label?: string; routing?: Routing;
   startArrowhead?: Arrowhead; endArrowhead?: Arrowhead;
 };
 export type TextOperation = Style & TextStyle & { op: 'create_text'; id: string; x: number; y: number; text: string; width?: number };
-export type LineOperation = Style & { op: 'create_line'; id: string; points: Point[]; kind?: 'line' | 'arrow'; startArrowhead?: Arrowhead; endArrowhead?: Arrowhead };
+export type LineOperation = Style & { op: 'create_line'; id: string; points: Point[]; kind?: 'line' | 'arrow'; routing?: Routing; startArrowhead?: Arrowhead; endArrowhead?: Arrowhead };
 export type ElementChanges = Style & TextStyle & {
   x?: number; y?: number; width?: number; height?: number; angle?: number; text?: string;
   points?: Point[]; fromId?: string | null; toId?: string | null;
-  startArrowhead?: Arrowhead; endArrowhead?: Arrowhead; routing?: 'straight' | 'elbow';
+  startArrowhead?: Arrowhead; endArrowhead?: Arrowhead; routing?: Routing;
 };
 export type MoveOperation = { op: 'move'; id: string; x: number; y: number };
 export type CreateFrameOperation = { op: 'create_frame'; id: string; ids: string[]; name?: string; padding?: number; background?: string };

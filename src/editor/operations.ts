@@ -1,8 +1,8 @@
-import { convertToExcalidrawElements, getCommonBounds, newElementWith, restoreElements } from '@excalidraw/excalidraw';
+import { convertToExcalidrawElements, getCommonBounds, newElementWith } from '@excalidraw/excalidraw';
 import type { ExcalidrawArrowElement } from '@excalidraw/excalidraw/element/types';
 import { CommandError, type ElementChanges, type Operation, type Point } from '../protocol';
 import { bounds, carriedBackground, editable, isArrow, isFrame, isFrameBackground, isLinear, isShape, measureText, newID, reflowLabel, required, style, withFrameContents, withLabels, type Element, type Skeleton } from './elements';
-import { geometry, makeArrow, repairReferences, routeArrow, updateAttached, worldPoints } from './connectors';
+import { asArrow, geometry, makeArrow, makeLine, repairReferences, routeArrow, setRouting, updateAttached } from './connectors';
 import { canvasColor, createFrame, removeFrame, updateFrame } from './frames';
 import { normalizeFrames, reorder } from './layers';
 
@@ -27,14 +27,15 @@ function update(elements: Element[], id: string, changes: ElementChanges): Eleme
   if (isFrame(original)) throw new CommandError('unsupported_property', 'Use update_frame for frame name, padding, and background; use move or translate to move a frame and its contents.');
   const textKeys = ['text', 'fontSize', 'textAlign'].some(key => key in changes);
   const connectorKeys = ['fromId', 'toId', 'routing', 'startArrowhead', 'endArrowhead'].some(key => key in changes);
-  if (connectorKeys && original.type !== 'arrow') throw new CommandError('unsupported_property', 'Endpoint bindings, routing, and arrowheads require an arrow.');
+  if (connectorKeys && !isLinear(original)) throw new CommandError('unsupported_property', 'Endpoint bindings, routing, and markers require a line or arrow.');
+  const markerKeys = changes.startArrowhead !== undefined || changes.endArrowhead !== undefined;
+  const needsArrow = [changes.startArrowhead, changes.endArrowhead].some(head => head && head !== 'none')
+    || changes.fromId != null || changes.toId != null || changes.routing === 'elbow';
   if (changes.points && !isLinear(original)) throw new CommandError('unsupported_property', 'Points can only be edited on lines and arrows.');
-  if (textKeys && original.type !== 'text' && !isShape(original) && original.type !== 'arrow') throw new CommandError('unsupported_property', 'Text styling requires standalone text or a shape/arrow label.');
+  if (textKeys && original.type !== 'text' && !isShape(original) && original.type !== 'arrow' && !(original.type === 'line' && needsArrow)) throw new CommandError('unsupported_property', 'Text styling requires standalone text or a shape/arrow label.');
   if (original.type === 'text' && changes.height !== undefined) throw new CommandError('unsupported_property', 'Text height is measured automatically; change fontSize, text, or width.');
   const geometryKeys = ['x', 'y', 'width', 'height', 'angle'].some(key => key in changes);
   if (geometryKeys && !isShape(original) && !isLinear(original) && original.type !== 'text' && original.type !== 'image') throw new CommandError('unsupported_geometry', 'Resize and rotation support basic shapes, text, lines, arrows, and images. Use translate to move other elements.');
-  if (original.type === 'arrow' && (changes.routing === 'elbow' || (original as ExcalidrawArrowElement).elbowed) && changes.angle !== undefined && changes.angle !== 0) throw new CommandError('unsupported_rotation', 'Elbow arrows keep horizontal and vertical segments. Rotate their shapes instead.');
-  if (original.type === 'arrow' && (original.startBinding || original.endBinding) && changes.angle !== undefined && changes.angle !== 0) throw new CommandError('unsupported_rotation', 'Detach bound arrow endpoints before rotating the arrow.');
   let next = newElementWith<Element>(original, { ...style(changes),
     ...(changes.x === undefined ? {} : { x: changes.x }), ...(changes.y === undefined ? {} : { y: changes.y }),
     ...(changes.width === undefined ? {} : { width: changes.width }), ...(changes.height === undefined ? {} : { height: changes.height }),
@@ -42,6 +43,11 @@ function update(elements: Element[], id: string, changes: ElementChanges): Eleme
   });
   if (next.type === 'text') next = measureText(next, changes.text ?? next.originalText, changes);
   if (next.type === 'line' || next.type === 'arrow') {
+    next = newElementWith(next, {
+      ...(changes.startArrowhead === undefined ? {} : { startArrowhead: changes.startArrowhead === 'none' ? null : changes.startArrowhead }),
+      ...(changes.endArrowhead === undefined ? {} : { endArrowhead: changes.endArrowhead === 'none' ? null : changes.endArrowhead }),
+      ...(changes.fromId === null ? { startBinding: null } : {}), ...(changes.toId === null ? { endBinding: null } : {}),
+    });
     if (changes.points && geometryKeys) throw new CommandError('conflicting_geometry', 'Set points or position/size/rotation in one operation, not both.');
     if (changes.points) next = newElementWith(next, geometry(changes.points));
     else if (changes.width !== undefined || changes.height !== undefined) {
@@ -49,6 +55,8 @@ function update(elements: Element[], id: string, changes: ElementChanges): Eleme
       const scaled = next.points.map(([x, y]) => [x * (changes.width === undefined ? 1 : changes.width / original.width), y * (changes.height === undefined ? 1 : changes.height / original.height)]) as typeof next.points;
       next = newElementWith(next, { points: scaled });
     }
+    if (next.type === 'line' && needsArrow) next = asArrow(next);
+    if (changes.routing !== undefined) next = setRouting(next, changes.routing);
     if (next.type === 'arrow') {
       const binding = (value: string | null | undefined, old: ExcalidrawArrowElement['startBinding']) => {
         if (value === undefined) return old;
@@ -59,14 +67,12 @@ function update(elements: Element[], id: string, changes: ElementChanges): Eleme
       };
       next = newElementWith(next, {
         startBinding: binding(changes.fromId, next.startBinding), endBinding: binding(changes.toId, next.endBinding),
-        ...(changes.startArrowhead === undefined ? {} : { startArrowhead: changes.startArrowhead === 'none' ? null : changes.startArrowhead }),
-        ...(changes.endArrowhead === undefined ? {} : { endArrowhead: changes.endArrowhead === 'none' ? null : changes.endArrowhead }),
       });
-      if (changes.routing !== undefined) {
-        const points = worldPoints(next);
-        next = newElementWith(next, { ...geometry([points[0], points[points.length - 1]]), elbowed: changes.routing === 'elbow' } as Partial<ExcalidrawArrowElement>);
+      if (changes.angle !== undefined && changes.angle !== 0) {
+        if ((next as ExcalidrawArrowElement).elbowed) throw new CommandError('unsupported_rotation', 'Elbow arrows keep horizontal and vertical segments. Rotate their shapes instead.');
+        if (next.startBinding || next.endBinding) throw new CommandError('unsupported_rotation', 'Detach bound arrow endpoints before rotating the arrow.');
       }
-      if (geometryKeys || changes.points || changes.fromId !== undefined || changes.toId !== undefined || changes.routing !== undefined) {
+      if (geometryKeys || changes.points || changes.fromId !== undefined || changes.toId !== undefined || changes.routing !== undefined || markerKeys) {
         next = routeArrow(elements, next as ExcalidrawArrowElement, changes.fromId !== undefined || changes.toId !== undefined || changes.routing !== undefined);
       }
     }
@@ -195,14 +201,7 @@ export function planOperations(current: readonly Element[], operations: Operatio
       }
       case 'create_line': {
         newID(elements, operation.id);
-        if (operation.kind !== 'arrow' && (operation.startArrowhead || operation.endArrowhead)) throw new CommandError('unsupported_property', 'Arrowheads require kind arrow.');
-        const created = convertToExcalidrawElements([{ type: operation.kind ?? 'line', id: operation.id,
-          ...geometry(operation.points), strokeColor: '#536357', strokeWidth: 2, roughness: 0, ...style(operation),
-          startArrowhead: operation.startArrowhead === 'none' ? null : operation.startArrowhead ?? null,
-          endArrowhead: operation.endArrowhead === 'none' ? null : operation.endArrowhead ?? (operation.kind === 'arrow' ? 'arrow' : null),
-        } as Skeleton], { regenerateIds: false });
-        const normalized = restoreElements(created, null, { repairBindings: false });
-        elements.push(...normalized.map(e => newElementWith(e, geometry(operation.points)))); break;
+        elements.push(makeLine(operation)); break;
       }
       case 'connect': {
         newID(elements, operation.id);

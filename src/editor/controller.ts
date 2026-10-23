@@ -122,11 +122,11 @@ export class DiagramController {
           textAlign: item.type === 'text' ? item.textAlign : label?.type === 'text' ? label.textAlign : undefined,
           groupIds: item.groupIds, fillStyle: item.fillStyle, opacity: item.opacity, roughness: item.roughness,
           stroke: item.strokeColor, fill: item.backgroundColor, strokeStyle: item.strokeStyle, strokeWidth: item.strokeWidth,
-          ...(item.type === 'arrow' || item.type === 'line' ? { points: worldPoints(item) } : {}),
-          ...(item.type === 'arrow' ? {
+          ...(item.type === 'arrow' || item.type === 'line' ? {
+            points: worldPoints(item),
             fromId: item.startBinding?.elementId ?? null, toId: item.endBinding?.elementId ?? null,
             startArrowhead: item.startArrowhead, endArrowhead: item.endArrowhead,
-            routing: isArrow(item) && item.elbowed ? 'elbow' : 'straight',
+            routing: isArrow(item) && item.elbowed ? 'elbow' : item.roundness ? 'curved' : 'straight',
           } : {}),
         };
       }),

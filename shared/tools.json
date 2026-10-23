@@ -1,6 +1,6 @@
 {
   "get_diagram": {
-    "description": "Read the active diagram ID, revision, name, save status, selection, viewport, and simplified elements including group IDs, original text, rendered labels, and line geometry. Coordinates are scene units and angles are radians. Call before editing; the browser must remain connected. Elements are ordered back-to-front and include frameId. Frames include name, memberIds (bound labels and managed background excluded) and backgroundId; read that rectangle's fill for the frame color. backgroundColor is the canvas color.",
+    "description": "Read the active diagram ID, revision, name, save status, selection, viewport, and simplified elements including group IDs, original text, rendered labels, and line geometry. Coordinates are scene units and angles are radians. Call before editing; the browser must remain connected. Elements are ordered back-to-front and include frameId. Frames include name, memberIds (bound labels and managed background excluded) and backgroundId; read that rectangle's fill for the frame color. backgroundColor is the canvas color. Lines and arrows both report startArrowhead/endArrowhead (null when absent), endpoint bindings and routing (straight, curved or elbow).",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -8,7 +8,7 @@
     }
   },
   "apply_operations": {
-    "description": "Atomically create, edit, organize, or delete canvas elements. Each operation is a flat object with an op field (not type). Basic example: {\"op\":\"create_shape\",\"id\":\"box-1\",\"shape\":\"rectangle\",\"x\":100,\"y\":100}. create_shape accepts only rectangle, ellipse or diamond. For imported library shapes, call list_custom_shapes then the dedicated insert_custom_shape tool, or include {\"op\":\"insert_custom_shape\",\"shapeId\":\"ID_FROM_LIST\",\"idPrefix\":\"copy-1\",\"x\":100,\"y\":100} in this batch. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes. Frames: {\"op\":\"create_frame\",\"id\":\"section\",\"ids\":[\"box-1\"],\"name\":\"Section\",\"padding\":40,\"background\":\"#e1e8e5\"}. Edit with {\"op\":\"update_frame\",\"id\":\"section\",\"background\":\"#f0f4f2\"}; remove_frame keeps contents. Canvas: {\"op\":\"set_background\",\"color\":\"#fcfcf9\"}. Layers: {\"op\":\"reorder\",\"ids\":[\"section\"],\"position\":\"back\"}; positions are front, back, forward, backward.",
+    "description": "Atomically create, edit, organize, or delete canvas elements. Each operation is a flat object with an op field (not type). Basic example: {\"op\":\"create_shape\",\"id\":\"box-1\",\"shape\":\"rectangle\",\"x\":100,\"y\":100}. create_shape accepts only rectangle, ellipse or diamond. For imported library shapes, call list_custom_shapes then the dedicated insert_custom_shape tool, or include {\"op\":\"insert_custom_shape\",\"shapeId\":\"ID_FROM_LIST\",\"idPrefix\":\"copy-1\",\"x\":100,\"y\":100} in this batch. Read get_diagram first and pass its diagramId and expectedRevision. A batch is one native undo step, validates fully before changing the canvas, and saves in IndexedDB. Use requestId for safe retries; reuse it only with identical arguments. Text, resize, rotation, styling, straight/curved/elbow connectors, groups, alignment, and duplication are supported. Locked elements and unsupported edits fail without changing the scene. Preview afterward to inspect layout. If saving fails, the canvas edit still succeeded: saveStatus is error and saveError explains why. Export a backup or retry saving before reloading; retry receipts become durable only when the scene saves. Geometry edits recalculate attached elbow routes. Frames: {\"op\":\"create_frame\",\"id\":\"section\",\"ids\":[\"box-1\"],\"name\":\"Section\",\"padding\":40,\"background\":\"#e1e8e5\"}. Edit with {\"op\":\"update_frame\",\"id\":\"section\",\"background\":\"#f0f4f2\"}; remove_frame keeps contents. Canvas: {\"op\":\"set_background\",\"color\":\"#fcfcf9\"}. Layers: {\"op\":\"reorder\",\"ids\":[\"section\"],\"position\":\"back\"}; positions are front, back, forward, backward. Endpoint markers work on any line or arrow: {\"op\":\"update\",\"id\":\"link\",\"changes\":{\"startArrowhead\":\"crowfoot_one\",\"endArrowhead\":\"crowfoot_many\"}}. Additional native choices include circle, circle_outline, triangle_outline, diamond, diamond_outline, and crowfoot_one_or_many. Use none to clear one end. Markers are part of the connector, so they follow edits automatically. Lines that need markers, bindings or elbows become native arrows with the same ID.",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -233,7 +233,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Create an unbound line or arrow (kind defaults to line). Arrowheads require kind arrow.",
+                "description": "Create an unbound line or arrow from absolute scene points (kind defaults to line). Any line may have startArrowhead/endArrowhead markers. Markers or elbow routing automatically use native arrow storage; no extra elements are created. Plain lines default to no markers at either end; kind arrow defaults to an arrow at the end. Supports straight segments, curved paths with 3+ points, and automatic elbow routing.",
                 "required": [
                   "op",
                   "id",
@@ -275,8 +275,17 @@
                       "arrow",
                       "triangle",
                       "bar",
-                      "dot"
-                    ]
+                      "dot",
+                      "circle",
+                      "circle_outline",
+                      "triangle_outline",
+                      "diamond",
+                      "diamond_outline",
+                      "crowfoot_one",
+                      "crowfoot_many",
+                      "crowfoot_one_or_many"
+                    ],
+                    "description": "Attached endpoint marker. ER notation: crowfoot_one = one, crowfoot_many = many, crowfoot_one_or_many = one or more. Other choices are ordinary arrowheads/symbols. none removes this marker. These are native connector properties, not separate custom shapes."
                   },
                   "endArrowhead": {
                     "enum": [
@@ -284,8 +293,17 @@
                       "arrow",
                       "triangle",
                       "bar",
-                      "dot"
-                    ]
+                      "dot",
+                      "circle",
+                      "circle_outline",
+                      "triangle_outline",
+                      "diamond",
+                      "diamond_outline",
+                      "crowfoot_one",
+                      "crowfoot_many",
+                      "crowfoot_one_or_many"
+                    ],
+                    "description": "Attached endpoint marker. ER notation: crowfoot_one = one, crowfoot_many = many, crowfoot_one_or_many = one or more. Other choices are ordinary arrowheads/symbols. none removes this marker. These are native connector properties, not separate custom shapes."
                   },
                   "fill": {
                     "type": "string",
@@ -324,13 +342,21 @@
                     "type": "number",
                     "minimum": 0,
                     "maximum": 3
+                  },
+                  "routing": {
+                    "enum": [
+                      "straight",
+                      "curved",
+                      "elbow"
+                    ],
+                    "description": "straight uses straight segments through the supplied points; curved smooths a path with 3+ points (two points still look straight); elbow automatically routes between endpoints. Switching away from elbow drops its generated bends."
                   }
                 }
               },
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Connect two basic shapes with a bound straight or elbow arrow, optionally with a label.",
+                "description": "Connect two basic shapes with a bound straight or elbow arrow, optionally with a label. Supports native ER crowfoot markers or ordinary endpoint symbols at either end. Curved routing needs intermediate points supplied with a later update.points operation; two endpoints alone still look straight.",
                 "required": [
                   "op",
                   "id",
@@ -362,8 +388,10 @@
                   "routing": {
                     "enum": [
                       "straight",
+                      "curved",
                       "elbow"
-                    ]
+                    ],
+                    "description": "straight uses straight segments through the supplied points; curved smooths a path with 3+ points (two points still look straight); elbow automatically routes between endpoints. Switching away from elbow drops its generated bends."
                   },
                   "startArrowhead": {
                     "enum": [
@@ -371,8 +399,17 @@
                       "arrow",
                       "triangle",
                       "bar",
-                      "dot"
-                    ]
+                      "dot",
+                      "circle",
+                      "circle_outline",
+                      "triangle_outline",
+                      "diamond",
+                      "diamond_outline",
+                      "crowfoot_one",
+                      "crowfoot_many",
+                      "crowfoot_one_or_many"
+                    ],
+                    "description": "Attached endpoint marker. ER notation: crowfoot_one = one, crowfoot_many = many, crowfoot_one_or_many = one or more. Other choices are ordinary arrowheads/symbols. none removes this marker. These are native connector properties, not separate custom shapes."
                   },
                   "endArrowhead": {
                     "enum": [
@@ -380,8 +417,17 @@
                       "arrow",
                       "triangle",
                       "bar",
-                      "dot"
-                    ]
+                      "dot",
+                      "circle",
+                      "circle_outline",
+                      "triangle_outline",
+                      "diamond",
+                      "diamond_outline",
+                      "crowfoot_one",
+                      "crowfoot_many",
+                      "crowfoot_one_or_many"
+                    ],
+                    "description": "Attached endpoint marker. ER notation: crowfoot_one = one, crowfoot_many = many, crowfoot_one_or_many = one or more. Other choices are ordinary arrowheads/symbols. none removes this marker. These are native connector properties, not separate custom shapes."
                   },
                   "fill": {
                     "type": "string",
@@ -469,7 +515,7 @@
               {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Edit geometry, text/label, and styling. Set text to empty to remove a label. Text height is measured automatically. Set fromId/toId to null to detach an arrow end. Elbow arrows cannot be rotated. For frames use update_frame (name/padding/background) or move/translate (position).",
+                "description": "Edit geometry, text/label, and styling. Set text to empty to remove a label. Text height is measured automatically. Set fromId/toId to null to detach an arrow end. Elbow arrows cannot be rotated. For frames use update_frame (name/padding/background) or move/translate (position). Lines accept endpoint markers, fromId/toId bindings, and routing too. Adding a marker, binding or elbow routing upgrades a plain line to native arrow storage with the same ID, points, style, groups and frame; clearing markers does not remove bindings or change the ID. Filled closed paths must be opened or their fill cleared before upgrading. Curved paths need 3+ points. Editing markers preserves the other endpoint unless explicitly changed.",
                 "required": [
                   "op",
                   "id",
@@ -561,8 +607,10 @@
                       "routing": {
                         "enum": [
                           "straight",
+                          "curved",
                           "elbow"
-                        ]
+                        ],
+                        "description": "straight uses straight segments through the supplied points; curved smooths a path with 3+ points (two points still look straight); elbow automatically routes between endpoints. Switching away from elbow drops its generated bends."
                       },
                       "startArrowhead": {
                         "enum": [
@@ -570,8 +618,17 @@
                           "arrow",
                           "triangle",
                           "bar",
-                          "dot"
-                        ]
+                          "dot",
+                          "circle",
+                          "circle_outline",
+                          "triangle_outline",
+                          "diamond",
+                          "diamond_outline",
+                          "crowfoot_one",
+                          "crowfoot_many",
+                          "crowfoot_one_or_many"
+                        ],
+                        "description": "Attached endpoint marker. ER notation: crowfoot_one = one, crowfoot_many = many, crowfoot_one_or_many = one or more. Other choices are ordinary arrowheads/symbols. none removes this marker. These are native connector properties, not separate custom shapes."
                       },
                       "endArrowhead": {
                         "enum": [
@@ -579,8 +636,17 @@
                           "arrow",
                           "triangle",
                           "bar",
-                          "dot"
-                        ]
+                          "dot",
+                          "circle",
+                          "circle_outline",
+                          "triangle_outline",
+                          "diamond",
+                          "diamond_outline",
+                          "crowfoot_one",
+                          "crowfoot_many",
+                          "crowfoot_one_or_many"
+                        ],
+                        "description": "Attached endpoint marker. ER notation: crowfoot_one = one, crowfoot_many = many, crowfoot_one_or_many = one or more. Other choices are ordinary arrowheads/symbols. none removes this marker. These are native connector properties, not separate custom shapes."
                       },
                       "fill": {
                         "type": "string",
