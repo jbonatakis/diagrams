@@ -91,6 +91,29 @@ test('frames and backgrounds preserve content, earlier history, previews, export
   expect((await read(client)).backgroundColor).toBe('#f6f5f0');
 });
 
+test('editing standalone text keeps its frame, group and layer order', async ({ page }) => {
+  const client = await connectAgent(page);
+  const before = await apply(client, [
+    { op: 'create_text', id: 'caption', x: 200, y: 150, text: 'Original caption', width: 300 },
+    { op: 'create_shape', id: 'box', shape: 'rectangle', x: 200, y: 280, width: 200, height: 100 },
+    { op: 'group', ids: ['caption', 'box'], groupId: 'section' },
+    { op: 'create_frame', id: 'frame', ids: ['box'], background: '#e1ebe5' },
+  ]);
+  const changed = await apply(client, [{ op: 'update', id: 'caption', changes: {
+    text: 'An updated caption with enough text to wrap over multiple lines', width: 220, fontSize: 24, textAlign: 'left',
+  } }]);
+  expect(element(changed, 'caption')).toMatchObject({ frameId: 'frame', groupIds: ['section'], width: 220, fontSize: 24 });
+  expect(element(changed, 'caption').height).toBeGreaterThan(element(before, 'caption').height);
+  expect(order(changed)).toEqual(order(before));
+  const preview = await client.callTool({ name: 'preview_diagram', arguments: { diagramId: changed.diagramId, elementIds: ['frame'] } });
+  expect(preview.isError).not.toBe(true);
+  expect((preview.structuredContent as { elementIds: string[] }).elementIds).toContain('caption');
+  const file = await rawScene(client, changed.diagramId);
+  expect(file.elements.find((e: any) => e.id === 'caption')).toMatchObject({ frameId: 'frame', groupIds: ['section'] });
+  await history(page);
+  await expect.poll(async () => (await read(client)).elements).toEqual(before.elements);
+});
+
 test('frame moves, refits, copies and removal keep membership, backgrounds and bindings consistent', async ({ page }) => {
   const client = await connectAgent(page);
   const initial = await apply(client, [...boxes, { op: 'create_frame', id: 'frame', ids: ['a', 'b'], background: '#e1e8e5' }]);

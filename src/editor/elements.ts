@@ -110,6 +110,14 @@ export function measureText(element: ExcalidrawTextElement, text: string, change
   const [measured] = restoreElements([{ ...created, x: element.x, y: element.y,
     ...(wrapped ? { width: changes.width ?? width } : {}) }], null, { repairBindings: true, refreshDimensions: true });
   if (measured?.type !== 'text') throw new CommandError('invalid_text', 'Could not measure text.');
-  return newElementWith(element, { ...measured, x: element.x, y: element.y }) as ExcalidrawTextElement;
+  // Measurement restores this text in isolation. Its frame, bound elements and
+  // scene index cannot be repaired without the rest of the scene, so copy only
+  // text/measurement fields back and retain the original scene relationships.
+  return newElementWith(element, {
+    text: measured.text, originalText: measured.originalText,
+    width: measured.width, height: measured.height,
+    fontFamily: measured.fontFamily, fontSize: measured.fontSize, lineHeight: measured.lineHeight,
+    textAlign: measured.textAlign, autoResize: measured.autoResize,
+  });
 }
 
